@@ -1,0 +1,5 @@
+target/
+tests/fixtures/native/
+tests/fixtures/mingw/
+tests/fixtures/nightly/
+reference/Nim/
