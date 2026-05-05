@@ -84,41 +84,46 @@ pub fn demangle(mangled: &str) -> Cow<'_, str> {
         // Nim's `toHex(ord(c), 2)` always produces UPPERCASE hex digits,
         // and only for characters not handled by passthrough or named
         // substitutions. We check both conditions to avoid false positives.
-        if bytes[i] == b'X' {
-            if i + 2 < bytes.len() {
-                let hi = bytes[i + 1];
-                let lo = bytes[i + 2];
-
-                if is_upper_hex(hi) && is_upper_hex(lo) {
-                    if let Some(val) = decode_hex2(hi, lo) {
-                        if !is_mangle_passthrough_or_substitution(val) {
-                            out.push(val as char);
-                            i += 3;
-                            continue;
-                        }
-                    }
-                }
+        if bytes.get(i).copied() == Some(b'X') {
+            let hi_idx = i.saturating_add(1);
+            let lo_idx = i.saturating_add(2);
+            if let (Some(&hi), Some(&lo)) = (bytes.get(hi_idx), bytes.get(lo_idx))
+                && is_upper_hex(hi)
+                && is_upper_hex(lo)
+                && let Some(val) = decode_hex2(hi, lo)
+                && !is_mangle_passthrough_or_substitution(val)
+            {
+                out.push(val as char);
+                i = i.saturating_add(3);
+                continue;
             }
 
             // Leading-digit escape at position 0: X followed by a digit
             // that started the original Nim identifier.
-            if i == 0 && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
-                out.push(bytes[i + 1] as char);
-                i += 2;
+            if i == 0
+                && let Some(&next) = bytes.get(hi_idx)
+                && next.is_ascii_digit()
+            {
+                out.push(next as char);
+                i = i.saturating_add(2);
                 continue;
             }
         }
 
         // Try substitution words (longest-first).
-        if let Some((word, ch)) = try_substitution(&bytes[i..]) {
+        if let Some(tail) = bytes.get(i..)
+            && let Some((word, ch)) = try_substitution(tail)
+        {
             out.push(ch);
-            i += word.len();
+            i = i.saturating_add(word.len());
             continue;
         }
 
         // Literal character.
-        out.push(bytes[i] as char);
-        i += 1;
+        if let Some(&b) = bytes.get(i) {
+            out.push(b as char);
+        }
+        i = i.saturating_add(1);
     }
 
     Cow::Owned(out)
@@ -135,21 +140,26 @@ pub fn mangle(name: &str) -> String {
     let mut requires_underscore = false;
 
     // Leading-digit escape.
-    if !bytes.is_empty() && bytes[0].is_ascii_digit() {
+    if let Some(&first) = bytes.first()
+        && first.is_ascii_digit()
+    {
         result.push('X');
-        result.push(bytes[0] as char);
+        result.push(first as char);
         start = 1;
     }
 
     for i in start..bytes.len() {
-        let c = bytes[i];
+        let Some(&c) = bytes.get(i) else {
+            break;
+        };
         match c {
             b'a'..=b'z' | b'0'..=b'9' | b'A'..=b'Z' => {
                 result.push(c as char);
             }
             b'_' => {
                 // Nim discards underscores before digits (scope disambiguator).
-                if i > 0 && i < bytes.len() - 1 && bytes[i + 1].is_ascii_digit() {
+                let next = bytes.get(i.saturating_add(1)).copied();
+                if i > 0 && next.is_some_and(|b| b.is_ascii_digit()) {
                     // discard
                 } else {
                     result.push('_');
@@ -198,9 +208,9 @@ pub fn mangle(name: &str) -> String {
 
 fn to_hex_upper(nibble: u8) -> char {
     match nibble {
-        0..=9 => (b'0' + nibble) as char,
-        10..=15 => (b'A' + nibble - 10) as char,
-        _ => unreachable!(),
+        0..=9 => b'0'.wrapping_add(nibble) as char,
+        10..=15 => b'A'.wrapping_add(nibble).wrapping_sub(10) as char,
+        _ => '0',
     }
 }
 
@@ -214,7 +224,7 @@ fn try_substitution(bytes: &[u8]) -> Option<(&'static str, char)> {
     // `foo&bar` — the Nim compiler's mangle produces the same output for
     // both. We match greedily (same as ESET nimfilt).
     for &(word, ch) in SUBSTITUTIONS {
-        if bytes.len() >= word.len() && &bytes[..word.len()] == word.as_bytes() {
+        if bytes.get(..word.len()) == Some(word.as_bytes()) {
             return Some((word, ch));
         }
     }
@@ -248,9 +258,9 @@ fn decode_hex2(hi: u8, lo: u8) -> Option<u8> {
 
 fn hex_val(b: u8) -> Option<u8> {
     match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
+        b'0'..=b'9' => Some(b.wrapping_sub(b'0')),
+        b'a'..=b'f' => Some(b.wrapping_sub(b'a').wrapping_add(10)),
+        b'A'..=b'F' => Some(b.wrapping_sub(b'A').wrapping_add(10)),
         _ => None,
     }
 }

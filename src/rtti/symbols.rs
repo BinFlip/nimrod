@@ -4,8 +4,14 @@
 //! globals, returning structured entries for each. See RESEARCH.md §3.4.
 
 use crate::container::Container;
+use core::fmt;
 
 /// Which RTTI generation a symbol belongs to.
+///
+/// # Stability
+///
+/// The string returned by [`Display`](fmt::Display) is part of nimrod's
+/// stable API. Changes are SemVer-major.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RttiVersion {
     /// Legacy `TNimType` (refc GC). Symbol format: `NTI<typespec><hash>_`.
@@ -14,23 +20,36 @@ pub enum RttiVersion {
     V2,
 }
 
+impl fmt::Display for RttiVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::V1 => "V1",
+            Self::V2 => "V2",
+        })
+    }
+}
+
 /// A located RTTI symbol.
+///
+/// `address` is a virtual address (image load space). To convert to an
+/// RVA for disassembler use, call [`crate::NimBinary::rtti_rva`].
 #[derive(Debug, Clone)]
-pub struct RttiSymbol<'a> {
+pub struct RttiSymbol {
     /// V1 or V2.
     pub version: RttiVersion,
     /// The full symbol name (e.g. `NTIv2__abc123_`).
-    pub symbol_name: &'a str,
-    /// Virtual address of the RTTI global.
+    pub symbol_name: String,
+    /// Virtual address of the RTTI global (image load space, not file
+    /// offset).
     pub address: u64,
     /// For V1 symbols, the type-name fragment between `NTI` and the hash.
     /// E.g. `NTIseqLintT<hash>_` → `Some("seqLintT")`.
     /// Always `None` for V2 symbols.
-    pub type_fragment: Option<&'a str>,
+    pub type_fragment: Option<String>,
 }
 
 /// Scans the container's symbol table for all RTTI globals.
-pub fn scan<'a>(container: &'a Container<'a>) -> Vec<RttiSymbol<'a>> {
+pub fn scan(container: &Container<'_>) -> Vec<RttiSymbol> {
     let mut result = Vec::new();
 
     for sym in container.symbols() {
@@ -39,24 +58,19 @@ pub fn scan<'a>(container: &'a Container<'a>) -> Vec<RttiSymbol<'a>> {
             continue;
         }
 
-        if let Some(inner) = name.strip_prefix("NTIv2") {
-            // V2: NTIv2<hash>_
-            let _ = inner; // hash is the part between "NTIv2" and trailing "_"
+        if let Some(_inner) = name.strip_prefix("NTIv2") {
             result.push(RttiSymbol {
                 version: RttiVersion::V2,
-                symbol_name: name,
+                symbol_name: name.to_string(),
                 address: sym.vm_addr,
                 type_fragment: None,
             });
         } else if let Some(inner) = name.strip_prefix("NTI") {
-            // V1: NTI<typespec><hash>_ — the hash is separated from the
-            // type spec by `__` in the naming convention from ccgtypes.nim.
-            // We extract the type fragment before the hash.
             let body = inner.strip_suffix('_').unwrap_or(inner);
-            let type_fragment = extract_v1_type_fragment(body);
+            let type_fragment = extract_v1_type_fragment(body).map(|s| s.to_string());
             result.push(RttiSymbol {
                 version: RttiVersion::V1,
-                symbol_name: name,
+                symbol_name: name.to_string(),
                 address: sym.vm_addr,
                 type_fragment,
             });

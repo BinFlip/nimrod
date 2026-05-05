@@ -16,8 +16,15 @@ mod macho;
 mod pe;
 
 use crate::error::{Error, Result};
+use core::fmt;
 
 /// Native container format of the underlying binary.
+///
+/// # Stability
+///
+/// The string returned by [`Display`](fmt::Display) is part of nimrod's
+/// stable API: downstream consumers persist it as a schema
+/// discriminator. Changes to these strings are SemVer-major.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Format {
     /// Executable and Linkable Format — Linux, BSD, and other Unix hosts.
@@ -28,7 +35,22 @@ pub enum Format {
     MachO,
 }
 
+impl fmt::Display for Format {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Elf => "Elf",
+            Self::Pe => "Pe",
+            Self::MachO => "MachO",
+        })
+    }
+}
+
 /// CPU architecture reported by the container header.
+///
+/// # Stability
+///
+/// The string returned by [`Display`](fmt::Display) is part of nimrod's
+/// stable API. Changes are SemVer-major.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Arch {
     /// 32-bit x86.
@@ -49,6 +71,22 @@ pub enum Arch {
     PowerPc64,
     /// Any architecture we did not map explicitly.
     Other,
+}
+
+impl fmt::Display for Arch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::I386 => "I386",
+            Self::Amd64 => "Amd64",
+            Self::Arm => "Arm",
+            Self::Aarch64 => "Aarch64",
+            Self::Riscv32 => "Riscv32",
+            Self::Riscv64 => "Riscv64",
+            Self::PowerPc => "PowerPc",
+            Self::PowerPc64 => "PowerPc64",
+            Self::Other => "Other",
+        })
+    }
 }
 
 /// Coarse classification of a section's role.
@@ -132,10 +170,20 @@ pub struct Symbol<'a> {
 }
 
 /// Parsed container-format view of a native binary.
+///
+/// # Address space
+///
+/// All address fields exposed by `Container` and the higher-level scans
+/// (`Section::vm_addr`, `Symbol::vm_addr`, `EntryShim::address`,
+/// `RaiseSite::call_addr`, …) are **virtual addresses** in the input
+/// image's load space, not file offsets. To translate a VA into a
+/// disassembler-style RVA, subtract [`Container::image_base`] (or use
+/// the `*_rva` helpers on [`crate::NimBinary`]).
 pub struct Container<'a> {
     bytes: &'a [u8],
     format: Format,
     arch: Arch,
+    image_base: u64,
     sections: Vec<Section<'a>>,
     symbols: Vec<Symbol<'a>>,
 }
@@ -169,6 +217,29 @@ impl<'a> Container<'a> {
         self.arch
     }
 
+    /// Returns the image base address: the virtual address that the
+    /// container's lowest loadable region maps to.
+    ///
+    /// - **PE**: `OptionalHeader.windows_fields.image_base` (the canonical
+    ///   `ImageBase`).
+    /// - **ELF**: lowest `PT_LOAD` `p_vaddr` (zero for typical PIE / shared
+    ///   objects, non-zero for fixed-load executables).
+    /// - **Mach-O**: lowest segment `vmaddr` (often the `__TEXT` segment).
+    ///
+    /// Subtracting this from any VA produced by nimrod yields the RVA used
+    /// by Binary Ninja, Ghidra, IDA, and similar disassemblers.
+    pub fn image_base(&self) -> u64 {
+        self.image_base
+    }
+
+    /// Translates a virtual address into an image-relative address (RVA).
+    ///
+    /// Returns `None` when `va < image_base()` (e.g. a sentinel zero VA on
+    /// an undefined symbol, or a VA from a different image).
+    pub fn va_to_rva(&self, va: u64) -> Option<u64> {
+        va.checked_sub(self.image_base)
+    }
+
     /// Returns every parsed section.
     pub fn sections(&self) -> &[Section<'a>] {
         &self.sections
@@ -197,7 +268,7 @@ impl<'a> Container<'a> {
             s.kind == SymbolKind::Function
                 && s.size > 0
                 && va >= s.vm_addr
-                && va < s.vm_addr + s.size
+                && s.vm_addr.checked_add(s.size).is_some_and(|end| va < end)
         }) {
             return Some(sym);
         }
@@ -226,6 +297,7 @@ pub(crate) fn assemble<'a>(
     bytes: &'a [u8],
     format: Format,
     arch: Arch,
+    image_base: u64,
     sections: Vec<Section<'a>>,
     symbols: Vec<Symbol<'a>>,
 ) -> Container<'a> {
@@ -233,6 +305,7 @@ pub(crate) fn assemble<'a>(
         bytes,
         format,
         arch,
+        image_base,
         sections,
         symbols,
     }

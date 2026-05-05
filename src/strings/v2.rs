@@ -23,11 +23,16 @@ const STRLIT_FLAG_64: u64 = 1 << 62;
 const STRLIT_FLAG_32: u32 = 1 << 30;
 
 /// A recovered V2 string literal.
+///
+/// `payload_addr` is a virtual address (image load space). To convert
+/// to an RVA, subtract [`crate::NimBinary::image_base`] or use
+/// [`crate::container::Container::va_to_rva`].
 #[derive(Debug, Clone)]
 pub struct StringLiteral {
     /// The literal content as a Rust string.
     pub value: String,
-    /// Virtual address of the payload in the binary.
+    /// Virtual address of the payload in the binary (image load space,
+    /// not file offset).
     pub payload_addr: u64,
 }
 
@@ -68,8 +73,8 @@ fn scan_section_64(data: &[u8], base_va: u64, out: &mut Vec<StringLiteral>) {
         return;
     }
 
-    let mut offset = 0;
-    while offset + word_size <= data.len() {
+    let mut offset: usize = 0;
+    while offset.saturating_add(word_size) <= data.len() {
         let raw_cap = util::read_u64_le(data, offset);
 
         if raw_cap & STRLIT_FLAG_64 != 0 {
@@ -78,32 +83,36 @@ fn scan_section_64(data: &[u8], base_va: u64, out: &mut Vec<StringLiteral>) {
                 break;
             };
             let Some(data_end) = data_start.checked_add(cap) else {
-                offset += word_size;
+                offset = offset.saturating_add(word_size);
                 continue;
             };
 
-            if cap < data.len() && data_end < data.len() && data[data_end] == 0 {
-                let payload = &data[data_start..data_end];
-                if let Ok(s) = std::str::from_utf8(payload) {
-                    out.push(StringLiteral {
-                        value: s.to_owned(),
-                        payload_addr: base_va + offset as u64,
-                    });
+            if cap < data.len()
+                && data_end < data.len()
+                && data.get(data_end).copied() == Some(0)
+                && let Some(payload) = data.get(data_start..data_end)
+                && let Ok(s) = std::str::from_utf8(payload)
+            {
+                out.push(StringLiteral {
+                    value: s.to_owned(),
+                    payload_addr: base_va.wrapping_add(offset as u64),
+                });
 
-                    if let Some(next) = data_start.checked_add(cap + 1) {
-                        let rem = next % word_size;
-                        offset = if rem != 0 {
-                            next.saturating_add(word_size - rem)
-                        } else {
-                            next
-                        };
-                        continue;
-                    }
+                if let Some(after_nul) = cap.checked_add(1)
+                    && let Some(next) = data_start.checked_add(after_nul)
+                {
+                    let rem = next % word_size;
+                    offset = if rem != 0 {
+                        next.saturating_add(word_size.saturating_sub(rem))
+                    } else {
+                        next
+                    };
+                    continue;
                 }
             }
         }
 
-        offset += word_size;
+        offset = offset.saturating_add(word_size);
     }
 }
 
@@ -113,8 +122,8 @@ fn scan_section_32(data: &[u8], base_va: u64, out: &mut Vec<StringLiteral>) {
         return;
     }
 
-    let mut offset = 0;
-    while offset + word_size <= data.len() {
+    let mut offset: usize = 0;
+    while offset.saturating_add(word_size) <= data.len() {
         let raw_cap = util::read_u32_le(data, offset);
 
         if raw_cap & STRLIT_FLAG_32 != 0 {
@@ -123,32 +132,36 @@ fn scan_section_32(data: &[u8], base_va: u64, out: &mut Vec<StringLiteral>) {
                 break;
             };
             let Some(data_end) = data_start.checked_add(cap) else {
-                offset += word_size;
+                offset = offset.saturating_add(word_size);
                 continue;
             };
 
-            if cap < data.len() && data_end < data.len() && data[data_end] == 0 {
-                let payload = &data[data_start..data_end];
-                if let Ok(s) = std::str::from_utf8(payload) {
-                    out.push(StringLiteral {
-                        value: s.to_owned(),
-                        payload_addr: base_va + offset as u64,
-                    });
+            if cap < data.len()
+                && data_end < data.len()
+                && data.get(data_end).copied() == Some(0)
+                && let Some(payload) = data.get(data_start..data_end)
+                && let Ok(s) = std::str::from_utf8(payload)
+            {
+                out.push(StringLiteral {
+                    value: s.to_owned(),
+                    payload_addr: base_va.wrapping_add(offset as u64),
+                });
 
-                    if let Some(next) = data_start.checked_add(cap + 1) {
-                        let rem = next % word_size;
-                        offset = if rem != 0 {
-                            next.saturating_add(word_size - rem)
-                        } else {
-                            next
-                        };
-                        continue;
-                    }
+                if let Some(after_nul) = cap.checked_add(1)
+                    && let Some(next) = data_start.checked_add(after_nul)
+                {
+                    let rem = next % word_size;
+                    offset = if rem != 0 {
+                        next.saturating_add(word_size.saturating_sub(rem))
+                    } else {
+                        next
+                    };
+                    continue;
                 }
             }
         }
 
-        offset += word_size;
+        offset = offset.saturating_add(word_size);
     }
 }
 

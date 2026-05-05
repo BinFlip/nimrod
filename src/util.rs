@@ -9,30 +9,37 @@
 
 #[inline(always)]
 pub(crate) fn read_u16_le(data: &[u8], offset: usize) -> u16 {
-    data.get(offset..offset + 2)
-        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+    read_array::<2>(data, offset)
+        .map(u16::from_le_bytes)
         .unwrap_or(0)
 }
 
 #[inline(always)]
 pub(crate) fn read_u32_le(data: &[u8], offset: usize) -> u32 {
-    data.get(offset..offset + 4)
-        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    read_array::<4>(data, offset)
+        .map(u32::from_le_bytes)
         .unwrap_or(0)
 }
 
 #[inline(always)]
 pub(crate) fn read_u64_le(data: &[u8], offset: usize) -> u64 {
-    data.get(offset..offset + 8)
-        .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+    read_array::<8>(data, offset)
+        .map(u64::from_le_bytes)
         .unwrap_or(0)
 }
 
 #[inline(always)]
 pub(crate) fn read_i16_le(data: &[u8], offset: usize) -> i16 {
-    data.get(offset..offset + 2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+    read_array::<2>(data, offset)
+        .map(i16::from_le_bytes)
         .unwrap_or(0)
+}
+
+#[inline(always)]
+fn read_array<const N: usize>(data: &[u8], offset: usize) -> Option<[u8; N]> {
+    let end = offset.checked_add(N)?;
+    let slice = data.get(offset..end)?;
+    slice.try_into().ok()
 }
 
 /// Returns the NUL-terminated byte slice starting at `offset`, excluding the
@@ -42,7 +49,7 @@ pub(crate) fn slice_cstring(data: &[u8], offset: usize, max_len: usize) -> Optio
     let end = offset.checked_add(max_len)?.min(data.len());
     let slice = data.get(offset..end)?;
     let nul = memchr::memchr(0, slice)?;
-    Some(&slice[..nul])
+    slice.get(..nul)
 }
 
 #[cfg(test)]

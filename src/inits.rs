@@ -10,8 +10,14 @@ use crate::{
     container::Container,
     demangle::modpath::{self, ModulePath},
 };
+use core::fmt;
 
 /// Classification of an init function.
+///
+/// # Stability
+///
+/// The string returned by [`Display`](fmt::Display) is part of nimrod's
+/// stable API. Changes are SemVer-major.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InitKind {
     /// `*Init000` — runtime module initialisation.
@@ -22,14 +28,27 @@ pub enum InitKind {
     HcrInit,
 }
 
+impl fmt::Display for InitKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Init => "Init",
+            Self::DatInit => "DatInit",
+            Self::HcrInit => "HcrInit",
+        })
+    }
+}
+
 /// A located module init function.
+///
+/// `address` is a virtual address (image load space). To convert to an
+/// RVA for disassembler use, call [`crate::NimBinary::init_rva`].
 #[derive(Debug, Clone)]
-pub struct InitFunction<'a> {
+pub struct InitFunction {
     /// Classification.
     pub kind: InitKind,
     /// The raw symbol name.
-    pub symbol_name: &'a str,
-    /// Virtual address.
+    pub symbol_name: String,
+    /// Virtual address (image load space, not file offset).
     pub address: u64,
     /// Decoded module path (filesystem path recovered from the mangled
     /// symbol name).
@@ -48,7 +67,7 @@ const INIT_SUFFIXES: &[(&str, InitKind)] = &[
 ///
 /// Skips `NimMainModule` (which is an entry shim, not a module init
 /// function) and linker-generated suffixed variants (e.g. `.cold.1`).
-pub fn scan<'a>(container: &'a Container<'a>) -> Vec<InitFunction<'a>> {
+pub fn scan(container: &Container<'_>) -> Vec<InitFunction> {
     let mut result = Vec::new();
 
     for sym in container.symbols() {
@@ -67,15 +86,11 @@ pub fn scan<'a>(container: &'a Container<'a>) -> Vec<InitFunction<'a>> {
                     continue;
                 }
 
-                // The module part includes the trailing `_` separator
-                // between the mangled module name and the suffix. But for
-                // Init000, the `_` is part of the mangled name's trailing
-                // underscore (from mangle substitutions).
                 let module_path = modpath::decode(module_part);
 
                 result.push(InitFunction {
                     kind,
-                    symbol_name: name,
+                    symbol_name: name.to_string(),
                     address: sym.vm_addr,
                     module_path,
                 });

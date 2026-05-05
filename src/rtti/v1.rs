@@ -229,50 +229,52 @@ pub fn read(container: &Container<'_>, va: u64) -> Option<TNimTypeFields> {
     let offset = va_to_offset(container, va)?;
 
     // Need at least: size + align + kind + flags + pad + 5 pointers
-    let min = ptr_size * 7 + 2;
-    if offset + min > bytes.len() {
+    let min = ptr_size.saturating_mul(7).saturating_add(2);
+    if offset.checked_add(min)? > bytes.len() {
         return None;
     }
 
     let mut pos = offset;
 
     let size = read_ptr(bytes, pos, is_64);
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     let align = read_ptr(bytes, pos, is_64);
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     let kind_raw = bytes.get(pos).copied().unwrap_or(0);
-    pos += 1;
+    pos = pos.saturating_add(1);
 
     let flags_raw = bytes.get(pos).copied().unwrap_or(0);
-    pos += 1;
+    pos = pos.saturating_add(1);
 
     // Padding to pointer alignment.
-    let misalign = (pos - offset) % ptr_size;
+    let misalign = pos.wrapping_sub(offset).checked_rem(ptr_size).unwrap_or(0);
     if misalign != 0 {
-        pos += ptr_size - misalign;
+        pos = pos.saturating_add(ptr_size.saturating_sub(misalign));
     }
 
     let base = read_ptr(bytes, pos, is_64);
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     let node = read_ptr(bytes, pos, is_64);
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     let finalizer = read_ptr(bytes, pos, is_64);
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     let marker = read_ptr(bytes, pos, is_64);
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     let deepcopy = read_ptr(bytes, pos, is_64);
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     // Try to find the `name` cstring. There may be a `typeInfoV2` pointer
     // first (if nimSeqsV2 is defined). We probe both positions.
-    let name = try_read_name(container, bytes, pos, is_64)
-        .or_else(|| try_read_name(container, bytes, pos + ptr_size, is_64));
+    let name = try_read_name(container, bytes, pos, is_64).or_else(|| {
+        pos.checked_add(ptr_size)
+            .and_then(|p| try_read_name(container, bytes, p, is_64))
+    });
 
     // Parse flags.
     let mut flags = Vec::new();
@@ -360,8 +362,11 @@ fn walk_node_tree(
     };
 
     // Minimum node size: kind(1) + pad + offset + typ + name + len + sons
-    let min = ptr_size * 5 + 1;
-    if off + min > bytes.len() {
+    let min = ptr_size.saturating_mul(5).saturating_add(1);
+    let Some(end) = off.checked_add(min) else {
+        return Vec::new();
+    };
+    if end > bytes.len() {
         return Vec::new();
     }
 
@@ -369,25 +374,25 @@ fn walk_node_tree(
 
     let kind_raw = bytes.get(pos).copied().unwrap_or(0);
     let kind = NodeKind::from_raw(kind_raw);
-    pos += 1;
+    pos = pos.saturating_add(1);
 
     // Pad to pointer alignment.
-    let misalign = (pos - off) % ptr_size;
+    let misalign = pos.wrapping_sub(off).checked_rem(ptr_size).unwrap_or(0);
     if misalign != 0 {
-        pos += ptr_size - misalign;
+        pos = pos.saturating_add(ptr_size.saturating_sub(misalign));
     }
 
     let field_offset = read_ptr(bytes, pos, is_64);
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     let typ = read_ptr(bytes, pos, is_64);
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     let name_ptr = read_ptr(bytes, pos, is_64);
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     let len = read_ptr(bytes, pos, is_64) as usize;
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     let sons_ptr = read_ptr(bytes, pos, is_64);
 
@@ -407,22 +412,29 @@ fn walk_node_tree(
         NodeKind::List => {
             // A list of child nodes. `len` is the count, `sons` points to
             // an array of `len` pointers to TNimNode.
-            if sons_ptr != 0 && len > 0 && len <= 4096 {
-                if let Some(sons_off) = va_to_offset(container, sons_ptr) {
-                    for i in 0..len {
-                        let child_ptr_off = sons_off + i * ptr_size;
-                        let child_va = read_ptr(bytes, child_ptr_off, is_64);
-                        if child_va != 0 {
-                            let child_fields = walk_node_tree(
-                                container,
-                                bytes,
-                                child_va,
-                                is_64,
-                                ptr_size,
-                                depth + 1,
-                            );
-                            result.extend(child_fields);
-                        }
+            if sons_ptr != 0
+                && len > 0
+                && len <= 4096
+                && let Some(sons_off) = va_to_offset(container, sons_ptr)
+            {
+                for i in 0..len {
+                    let Some(child_ptr_off) = i
+                        .checked_mul(ptr_size)
+                        .and_then(|d| sons_off.checked_add(d))
+                    else {
+                        break;
+                    };
+                    let child_va = read_ptr(bytes, child_ptr_off, is_64);
+                    if child_va != 0 {
+                        let child_fields = walk_node_tree(
+                            container,
+                            bytes,
+                            child_va,
+                            is_64,
+                            ptr_size,
+                            depth.saturating_add(1),
+                        );
+                        result.extend(child_fields);
                     }
                 }
             }
@@ -430,22 +442,29 @@ fn walk_node_tree(
         NodeKind::Case => {
             // A variant/case node. The `sons` array contains branches.
             // We walk all branches to collect all possible fields.
-            if sons_ptr != 0 && len > 0 && len <= 4096 {
-                if let Some(sons_off) = va_to_offset(container, sons_ptr) {
-                    for i in 0..len {
-                        let child_ptr_off = sons_off + i * ptr_size;
-                        let child_va = read_ptr(bytes, child_ptr_off, is_64);
-                        if child_va != 0 {
-                            let child_fields = walk_node_tree(
-                                container,
-                                bytes,
-                                child_va,
-                                is_64,
-                                ptr_size,
-                                depth + 1,
-                            );
-                            result.extend(child_fields);
-                        }
+            if sons_ptr != 0
+                && len > 0
+                && len <= 4096
+                && let Some(sons_off) = va_to_offset(container, sons_ptr)
+            {
+                for i in 0..len {
+                    let Some(child_ptr_off) = i
+                        .checked_mul(ptr_size)
+                        .and_then(|d| sons_off.checked_add(d))
+                    else {
+                        break;
+                    };
+                    let child_va = read_ptr(bytes, child_ptr_off, is_64);
+                    if child_va != 0 {
+                        let child_fields = walk_node_tree(
+                            container,
+                            bytes,
+                            child_va,
+                            is_64,
+                            ptr_size,
+                            depth.saturating_add(1),
+                        );
+                        result.extend(child_fields);
                     }
                 }
             }

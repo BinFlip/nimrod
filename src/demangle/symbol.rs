@@ -77,22 +77,24 @@ fn split_symbol(symbol: &str) -> Option<(&str, &str, Option<u64>)> {
     }
 
     // Iterate potential `__` split positions from right to left.
-    let mut i = bytes.len().saturating_sub(2);
-    while i >= 1 {
-        if bytes[i] == b'_' && bytes[i + 1] == b'_' {
+    let start = bytes.len().saturating_sub(2);
+    for i in (1..=start).rev() {
+        let b0 = bytes.get(i).copied();
+        let b1 = bytes.get(i.saturating_add(1)).copied();
+        if b0 == Some(b'_') && b1 == Some(b'_') {
             // Check that this isn't the middle of `___` — if bytes[i-1]
             // is also `_`, we may need to try one position further left
             // to get the real split. But first, try this position.
-            let raw_ident = &symbol[..i];
-            let suffix = &symbol[i + 2..];
+            let raw_ident = symbol.get(..i).unwrap_or("");
+            let suffix = symbol.get(i.saturating_add(2)..).unwrap_or("");
 
-            if !raw_ident.is_empty() && !suffix.is_empty() {
-                if let Some((module, item_id)) = parse_module_suffix(suffix) {
-                    return Some((raw_ident, module, item_id));
-                }
+            if !raw_ident.is_empty()
+                && !suffix.is_empty()
+                && let Some((module, item_id)) = parse_module_suffix(suffix)
+            {
+                return Some((raw_ident, module, item_id));
             }
         }
-        i -= 1;
     }
 
     None
@@ -102,7 +104,7 @@ fn split_symbol(symbol: &str) -> Option<(&str, &str, Option<u64>)> {
 fn parse_module_suffix(suffix: &str) -> Option<(&str, Option<u64>)> {
     // Try to find `_u<digits>` at the end.
     if let Some(pos) = suffix.rfind("_u") {
-        let after_u = &suffix[pos + 2..];
+        let after_u = suffix.get(pos.saturating_add(2)..).unwrap_or("");
         // The part after `_u` may have an HCR trailing suffix like `_<hash>`.
         // Parse digits greedily from the start.
         let digit_end = after_u
@@ -111,8 +113,8 @@ fn parse_module_suffix(suffix: &str) -> Option<(&str, Option<u64>)> {
             .unwrap_or(after_u.len());
 
         if digit_end > 0 {
-            let id: u64 = after_u[..digit_end].parse().ok()?;
-            let module = &suffix[..pos];
+            let id: u64 = after_u.get(..digit_end)?.parse().ok()?;
+            let module = suffix.get(..pos)?;
             if !module.is_empty() && is_valid_module_name(module) {
                 return Some((module, Some(id)));
             }

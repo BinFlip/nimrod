@@ -304,7 +304,7 @@ fn probe_rodata(c: &Container<'_>) -> DetectionMatches {
         if error_hits < 2 {
             for needle in ERROR_NEEDLES {
                 if memchr::memmem::find(section.data, needle).is_some() {
-                    error_hits += 1;
+                    error_hits = error_hits.saturating_add(1);
                     if error_hits >= 2 {
                         m |= DetectionMatches::NIM_ERROR_STRINGS;
                         break;

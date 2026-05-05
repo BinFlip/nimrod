@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use goblin::elf::{
     Elf, Symtab,
     header::{EM_386, EM_AARCH64, EM_ARM, EM_PPC, EM_PPC64, EM_RISCV, EM_X86_64},
+    program_header::PT_LOAD,
     section_header::{SHF_EXECINSTR, SHF_WRITE, SHT_NOBITS, SHT_PROGBITS},
     sym::{STT_FILE, STT_FUNC, STT_OBJECT, STT_SECTION, st_type},
 };
@@ -16,12 +17,26 @@ use crate::{
 
 pub(crate) fn build<'a>(bytes: &'a [u8], elf: Elf<'a>) -> Result<Container<'a>> {
     let arch = map_arch(elf.header.e_machine);
+    let image_base = elf
+        .program_headers
+        .iter()
+        .filter(|ph| ph.p_type == PT_LOAD)
+        .map(|ph| ph.p_vaddr)
+        .min()
+        .unwrap_or(0);
     let sections = collect_sections(bytes, &elf);
     let symbols = collect_symbols(&elf, &elf.syms, &elf.strtab)
         .into_iter()
         .chain(collect_symbols(&elf, &elf.dynsyms, &elf.dynstrtab))
         .collect();
-    Ok(assemble(bytes, Format::Elf, arch, sections, symbols))
+    Ok(assemble(
+        bytes,
+        Format::Elf,
+        arch,
+        image_base,
+        sections,
+        symbols,
+    ))
 }
 
 fn map_arch(e_machine: u16) -> Arch {

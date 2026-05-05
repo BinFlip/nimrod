@@ -66,32 +66,32 @@ pub fn read(container: &Container<'_>, va: u64) -> Option<TNimTypeV2Fields> {
     let bytes = container.bytes();
     let offset = va_to_offset(container, va)?;
 
-    let min_size = ptr_size * 6 + 4; // without name field
-    if offset + min_size > bytes.len() {
+    let min_size = ptr_size.saturating_mul(6).saturating_add(4); // without name field
+    if offset.checked_add(min_size)? > bytes.len() {
         return None;
     }
 
     let mut pos = offset;
 
     let destructor = read_ptr(bytes, pos, is_64);
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     let size = read_ptr(bytes, pos, is_64);
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     let align = util::read_i16_le(bytes, pos);
-    pos += 2;
+    pos = pos.saturating_add(2);
 
     let depth = util::read_i16_le(bytes, pos);
-    pos += 2;
+    pos = pos.saturating_add(2);
 
     // Padding to pointer alignment after two i16s.
     if is_64 {
-        pos += 4;
+        pos = pos.saturating_add(4);
     }
 
     let display = read_ptr(bytes, pos, is_64);
-    pos += ptr_size;
+    pos = pos.saturating_add(ptr_size);
 
     // Try the with-name layout first. If the pointer at this position
     // resolves to a valid cstring, the name field is present.
@@ -100,20 +100,20 @@ pub fn read(container: &Container<'_>, va: u64) -> Option<TNimTypeV2Fields> {
 
     let (trace_impl, type_info_v1, flags) = if name.is_some() {
         // With-name layout: name, traceImpl, typeInfoV1, flags.
-        pos += ptr_size; // skip name
+        pos = pos.saturating_add(ptr_size); // skip name
         let ti = read_ptr(bytes, pos, is_64);
-        pos += ptr_size;
+        pos = pos.saturating_add(ptr_size);
         let tv1 = read_ptr(bytes, pos, is_64);
-        pos += ptr_size;
+        pos = pos.saturating_add(ptr_size);
         let fl = read_ptr(bytes, pos, is_64);
         (ti, tv1, fl)
     } else {
         // Without-name layout: traceImpl, typeInfoV1, flags.
         // The pointer we read as candidate_name_ptr is actually traceImpl.
         let ti = candidate_name_ptr;
-        pos += ptr_size; // skip traceImpl
+        pos = pos.saturating_add(ptr_size); // skip traceImpl
         let tv1 = read_ptr(bytes, pos, is_64);
-        pos += ptr_size;
+        pos = pos.saturating_add(ptr_size);
         let fl = read_ptr(bytes, pos, is_64);
         (ti, tv1, fl)
     };
@@ -166,15 +166,21 @@ pub(crate) fn read_cstring_at_va(
 /// Maps a virtual address to a file offset by searching sections.
 pub(crate) fn va_to_offset(container: &Container<'_>, va: u64) -> Option<usize> {
     for section in container.sections() {
-        if va >= section.vm_addr && va < section.vm_addr + section.vm_size {
-            let section_offset = (va - section.vm_addr) as usize;
+        let Some(end) = section.vm_addr.checked_add(section.vm_size) else {
+            continue;
+        };
+        if va >= section.vm_addr && va < end {
+            let section_offset = va.wrapping_sub(section.vm_addr) as usize;
             if section_offset < section.data.len() {
                 // Recover the absolute offset into `container.bytes()` via
                 // pointer arithmetic on the section's data sub-slice.
                 let base = section.data.as_ptr() as usize;
                 let container_base = container.bytes().as_ptr() as usize;
                 if base >= container_base {
-                    return Some(base - container_base + section_offset);
+                    return Some(
+                        base.wrapping_sub(container_base)
+                            .wrapping_add(section_offset),
+                    );
                 }
             }
         }

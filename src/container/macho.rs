@@ -28,9 +28,23 @@ pub(crate) fn build<'a>(bytes: &'a [u8], mach: Mach<'a>) -> Result<Container<'a>
     };
 
     let arch = map_arch(macho.header.cputype);
+    let image_base = macho
+        .segments
+        .iter()
+        .map(|seg| seg.vmaddr)
+        .filter(|&v| v != 0)
+        .min()
+        .unwrap_or(0);
     let sections = collect_sections(bytes, &macho)?;
     let symbols = collect_symbols(&macho)?;
-    Ok(assemble(bytes, Format::MachO, arch, sections, symbols))
+    Ok(assemble(
+        bytes,
+        Format::MachO,
+        arch,
+        image_base,
+        sections,
+        symbols,
+    ))
 }
 
 fn map_arch(cputype: u32) -> Arch {

@@ -9,8 +9,14 @@
 //! See RESEARCH.md §3.5 (RTTI counts by mode) and §6 (entry shims).
 
 use crate::{container::Container, detect::DetectionMatches};
+use core::fmt;
 
 /// Nim garbage-collector / memory-management mode.
+///
+/// # Stability
+///
+/// The string returned by [`Display`](fmt::Display) is part of nimrod's
+/// stable API. Changes are SemVer-major.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GcMode {
     /// `--mm:refc` — traditional reference-counting GC (Nim 1.x default).
@@ -22,6 +28,16 @@ pub enum GcMode {
     /// Could not determine the GC mode (no RTTI symbols found, e.g.
     /// in a fully stripped binary).
     Unknown,
+}
+
+impl fmt::Display for GcMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Refc => "Refc",
+            Self::ArcOrc => "ArcOrc",
+            Self::Unknown => "Unknown",
+        })
+    }
 }
 
 /// Infers the GC mode from the detection report's RTTI flags.
@@ -54,11 +70,10 @@ pub fn nim_main_prefix<'a>(container: &'a Container<'a>) -> Option<&'a str> {
         }
         // Custom prefix: `<prefix>NimMain` — must not contain `__`
         // (which would indicate a normal mangled symbol).
-        if stripped.ends_with("NimMain")
+        if let Some(prefix) = stripped.strip_suffix("NimMain")
+            && !prefix.is_empty()
             && !stripped.contains("__")
-            && stripped.len() > "NimMain".len()
         {
-            let prefix = &stripped[..stripped.len() - "NimMain".len()];
             // The prefix should be a valid identifier fragment.
             if prefix
                 .bytes()

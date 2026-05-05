@@ -1,9 +1,10 @@
 //! High-level [`NimBinary`] facade.
 //!
-//! Owns a parsed [`Container`] plus a cached [`DetectionReport`]. Later
-//! milestones (M2+) add lazy accessors for symbols, RTTI, strings,
-//! stack-trace metadata, and attribution artifacts; M1 exposes only the
-//! container view and the detection verdict.
+//! Owns a parsed [`Container`], a cached [`DetectionReport`], and a lazy
+//! cache of every scan accessor. Each scan runs at most once per
+//! `NimBinary` instance — repeated calls return the same `&[T]` slice.
+
+use std::sync::OnceLock;
 
 use crate::{
     container::{Arch, Container, Format},
@@ -21,13 +22,48 @@ use crate::{
     strings::{v1 as strings_v1, v2 as strings_v2},
 };
 
+/// Lazy result cache. Each scan runs at most once per [`NimBinary`].
+#[derive(Default)]
+struct Cache {
+    entry_shims: OnceLock<Vec<EntryShim>>,
+    init_functions: OnceLock<Vec<InitFunction>>,
+    rtti_symbols: OnceLock<Vec<RttiSymbol>>,
+    string_literals_v2: OnceLock<Vec<strings_v2::StringLiteral>>,
+    string_literals_v1: OnceLock<Vec<strings_v1::StringLiteralV1>>,
+    stack_trace: OnceLock<StackTraceHarvest>,
+    nimble_paths: OnceLock<Vec<NimblePath>>,
+    exception_types: OnceLock<Vec<ExceptionRef>>,
+    raise_sites: OnceLock<Vec<RaiseSite>>,
+    module_map: OnceLock<ModuleMap>,
+}
+
 /// Parsed view of a Nim-compiled native binary.
 ///
 /// Construct via [`NimBinary::from_bytes`]. The type borrows from the input
 /// byte slice — no copies of the original bytes are made.
+///
+/// # Caching
+///
+/// Every scan accessor (`entry_shims`, `init_functions`, `rtti_symbols`,
+/// `string_literals_v2`, `string_literals_v1`, `stack_trace`,
+/// `nimble_paths`, `exception_types`, `raise_sites`, `module_map`) runs
+/// at most once. The first call performs the full scan and stores the
+/// result; subsequent calls return the same borrowed slice in `O(1)`.
+/// Caching is thread-safe (`OnceLock`).
+///
+/// # Address space
+///
+/// Every address-bearing field returned by `NimBinary` and its scan
+/// methods is a **virtual address** in the input image's load space —
+/// not a file offset. Most disassemblers (Binary Ninja, Ghidra, IDA)
+/// work in image-relative space; convert with the `*_rva` helpers on
+/// this type, with [`Container::va_to_rva`], or with the standalone
+/// helper [`crate::va_to_i64`] if you need a signed-integer encoding
+/// for persistence.
 pub struct NimBinary<'a> {
     container: Container<'a>,
     detection: DetectionReport,
+    cache: Cache,
 }
 
 impl<'a> NimBinary<'a> {
@@ -44,6 +80,7 @@ impl<'a> NimBinary<'a> {
         Ok(Self {
             container,
             detection,
+            cache: Cache::default(),
         })
     }
 
@@ -84,13 +121,21 @@ impl<'a> NimBinary<'a> {
     }
 
     /// Scans for Nim entry-point shims (`NimMain`, `PreMain`, etc.).
-    pub fn entry_shims(&'a self) -> Vec<EntryShim<'a>> {
-        shims::scan(&self.container)
+    ///
+    /// Cached: subsequent calls return the same slice in `O(1)`.
+    pub fn entry_shims(&self) -> &[EntryShim] {
+        self.cache
+            .entry_shims
+            .get_or_init(|| shims::scan(&self.container))
     }
 
     /// Scans for Nim module init functions (`*Init000`, `*DatInit000`).
-    pub fn init_functions(&'a self) -> Vec<InitFunction<'a>> {
-        inits::scan(&self.container)
+    ///
+    /// Cached: subsequent calls return the same slice in `O(1)`.
+    pub fn init_functions(&self) -> &[InitFunction] {
+        self.cache
+            .init_functions
+            .get_or_init(|| inits::scan(&self.container))
     }
 
     /// Infers the GC / memory-management mode from RTTI symbol presence.
@@ -108,51 +153,111 @@ impl<'a> NimBinary<'a> {
 
     /// Enumerates all RTTI globals (`NTIv2_` and `NTI_`) from the symbol
     /// table.
-    pub fn rtti_symbols(&'a self) -> Vec<RttiSymbol<'a>> {
-        rtti_symbols::scan(&self.container)
+    ///
+    /// Cached: subsequent calls return the same slice in `O(1)`.
+    pub fn rtti_symbols(&self) -> &[RttiSymbol] {
+        self.cache
+            .rtti_symbols
+            .get_or_init(|| rtti_symbols::scan(&self.container))
     }
 
     /// Scans rodata for V2 string literals (ARC/ORC builds).
-    pub fn string_literals_v2(&self) -> Vec<strings_v2::StringLiteral> {
-        strings_v2::scan(&self.container)
+    ///
+    /// Cached: subsequent calls return the same slice in `O(1)`.
+    pub fn string_literals_v2(&self) -> &[strings_v2::StringLiteral] {
+        self.cache
+            .string_literals_v2
+            .get_or_init(|| strings_v2::scan(&self.container))
     }
 
     /// Scans rodata for V1 string literals (refc builds, best-effort).
-    pub fn string_literals_v1(&self) -> Vec<strings_v1::StringLiteralV1> {
-        strings_v1::scan(&self.container)
+    ///
+    /// Cached: subsequent calls return the same slice in `O(1)`.
+    pub fn string_literals_v1(&self) -> &[strings_v1::StringLiteralV1] {
+        self.cache
+            .string_literals_v1
+            .get_or_init(|| strings_v1::scan(&self.container))
     }
 
     /// Harvests stack-trace file paths and proc names from rodata.
-    pub fn stack_trace(&self) -> StackTraceHarvest {
-        stacktrace::harvest(&self.container)
+    ///
+    /// Cached: subsequent calls return the same value in `O(1)`.
+    pub fn stack_trace(&self) -> &StackTraceHarvest {
+        self.cache
+            .stack_trace
+            .get_or_init(|| stacktrace::harvest(&self.container))
     }
 
     /// Scans for `.nimble/pkgs` path leaks revealing build-host
     /// attribution.
-    pub fn nimble_paths(&self) -> Vec<NimblePath> {
-        paths::scan(&self.container)
+    ///
+    /// Cached: subsequent calls return the same slice in `O(1)`.
+    pub fn nimble_paths(&self) -> &[NimblePath] {
+        self.cache
+            .nimble_paths
+            .get_or_init(|| paths::scan(&self.container))
     }
 
     /// Scans for exception type name cstrings (phase 1 raise-site
     /// recovery).
-    pub fn exception_types(&self) -> Vec<ExceptionRef> {
-        raises::scan(&self.container)
+    ///
+    /// Cached: subsequent calls return the same slice in `O(1)`.
+    pub fn exception_types(&self) -> &[ExceptionRef] {
+        self.cache
+            .exception_types
+            .get_or_init(|| raises::scan(&self.container))
     }
 
     /// Recovers full raise-site tuples (type, proc, file, line) by
     /// analysing call sites to `raiseExceptionEx` (phase 2).
     ///
-    /// Requires x86_64 or AArch64 architecture. Returns an empty vec
+    /// Requires x86_64 or AArch64 architecture. Returns an empty slice
     /// on unsupported architectures or if `raiseExceptionEx` is not
     /// found in the symbol table.
-    pub fn raise_sites(&self) -> Vec<RaiseSite> {
-        sites::scan(&self.container)
+    ///
+    /// Cached: subsequent calls return the same slice in `O(1)`.
+    pub fn raise_sites(&self) -> &[RaiseSite] {
+        self.cache
+            .raise_sites
+            .get_or_init(|| sites::scan(&self.container))
     }
 
     /// Builds a cross-referenced module map from init functions,
     /// demangled symbols, and stack-trace file paths.
-    pub fn module_map(&self) -> ModuleMap {
-        modules::build(&self.container)
+    ///
+    /// Cached: subsequent calls return the same value in `O(1)`.
+    pub fn module_map(&self) -> &ModuleMap {
+        self.cache
+            .module_map
+            .get_or_init(|| modules::build(&self.container))
+    }
+
+    /// Returns the image base address. See [`Container::image_base`].
+    pub fn image_base(&self) -> u64 {
+        self.container.image_base()
+    }
+
+    /// Returns an [`EntryShim`]'s address as an RVA (image-relative).
+    ///
+    /// `None` if the shim's VA is below the image base, which would
+    /// indicate a malformed container.
+    pub fn shim_rva(&self, shim: &EntryShim) -> Option<u64> {
+        self.container.va_to_rva(shim.address)
+    }
+
+    /// Returns an [`InitFunction`]'s address as an RVA.
+    pub fn init_rva(&self, init: &InitFunction) -> Option<u64> {
+        self.container.va_to_rva(init.address)
+    }
+
+    /// Returns a [`RaiseSite`]'s call address as an RVA.
+    pub fn raise_rva(&self, site: &RaiseSite) -> Option<u64> {
+        self.container.va_to_rva(site.call_addr)
+    }
+
+    /// Returns an [`RttiSymbol`]'s address as an RVA.
+    pub fn rtti_rva(&self, sym: &RttiSymbol) -> Option<u64> {
+        self.container.va_to_rva(sym.address)
     }
 }
 

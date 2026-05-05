@@ -83,33 +83,34 @@ fn scan_section(
     let mut offset = 0;
     while offset < data.len() {
         let Some(cstr) = util::slice_cstring(data, offset, 256) else {
-            offset += 1;
+            offset = offset.saturating_add(1);
             continue;
         };
 
         if cstr.is_empty() {
-            offset += 1;
+            offset = offset.saturating_add(1);
             continue;
         }
 
-        let advance = cstr.len() + 1;
+        let advance = cstr.len().saturating_add(1);
 
-        if let Ok(s) = std::str::from_utf8(cstr) {
-            if is_exception_type_name(s) && seen.insert(s.to_owned()) {
-                out.push(ExceptionRef {
-                    type_name: s.to_owned(),
-                });
-            }
+        if let Ok(s) = std::str::from_utf8(cstr)
+            && is_exception_type_name(s)
+            && seen.insert(s.to_owned())
+        {
+            out.push(ExceptionRef {
+                type_name: s.to_owned(),
+            });
         }
 
-        offset += advance;
+        offset = offset.saturating_add(advance);
     }
 }
 
 /// Returns `true` if the string looks like a Nim exception type name.
 fn is_exception_type_name(s: &str) -> bool {
     // Must be a valid identifier: starts with uppercase, alphanumeric.
-    if s.len() < 3 || !s.as_bytes()[0].is_ascii_uppercase() {
+    if s.len() < 3 || !s.as_bytes().first().is_some_and(u8::is_ascii_uppercase) {
         return false;
     }
     if !s.bytes().all(|b| b.is_ascii_alphanumeric()) {

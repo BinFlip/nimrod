@@ -52,7 +52,7 @@
 //! }
 //!
 //! // Raise sites: exception type + enclosing function + source location
-//! for rs in &bin.raise_sites() {
+//! for rs in bin.raise_sites() {
 //!     let _ = (
 //!         rs.exception_type.as_deref(),   // "ValueError"
 //!         rs.enclosing_function.as_deref(), // "parseHexInt__strutils_u1234"
@@ -73,8 +73,24 @@
 //! The format-level research backing every probe and struct layout is
 //! documented in `RESEARCH.md` at the crate root.
 
-#![deny(missing_docs, unsafe_code)]
+// `missing_docs`, `unsafe_code`, plus the clippy panic-prevention set
+// (`unwrap_used`, `expect_used`, `panic`, `arithmetic_side_effects`,
+// `indexing_slicing`) are declared in `Cargo.toml` under `[lints]` so
+// they enforce on every build regardless of the consuming workspace.
+// nimrod is used in malware-analysis pipelines where every input byte
+// is adversarial and the parser must not panic.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing
+    )
+)]
 
+pub mod addr;
 pub mod container;
 pub mod demangle;
 pub mod detect;
@@ -93,6 +109,7 @@ pub mod strings;
 mod binary;
 mod util;
 
+pub use addr::va_to_i64;
 pub use binary::NimBinary;
 pub use container::{Arch, Container, Format, Section, SectionKind, Symbol, SymbolKind};
 pub use detect::{DetectionMatches, DetectionReport};

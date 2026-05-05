@@ -27,9 +27,17 @@ use crate::{
 
 pub(crate) fn build<'a>(bytes: &'a [u8], pe: PE<'a>) -> Result<Container<'a>> {
     let arch = map_arch(pe.header.coff_header.machine);
+    let image_base = pe.image_base;
     let sections = collect_sections(bytes, &pe);
     let symbols = collect_symbols(bytes, &pe)?;
-    Ok(assemble(bytes, Format::Pe, arch, sections, symbols))
+    Ok(assemble(
+        bytes,
+        Format::Pe,
+        arch,
+        image_base,
+        sections,
+        symbols,
+    ))
 }
 
 fn map_arch(machine: u16) -> Arch {
@@ -74,11 +82,9 @@ fn section_name(s: &SectionTable) -> String {
         return real.clone();
     }
     // Inline name is 8 bytes, NUL-padded.
-    let mut end = 0;
-    while end < s.name.len() && s.name[end] != 0 {
-        end += 1;
-    }
-    String::from_utf8_lossy(&s.name[..end]).into_owned()
+    let end = s.name.iter().position(|&b| b == 0).unwrap_or(s.name.len());
+    let bytes = s.name.get(..end).unwrap_or(&[]);
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 fn classify(name: &str, characteristics: u32) -> SectionKind {
@@ -161,7 +167,7 @@ fn collect_symbols<'a>(bytes: &'a [u8], pe: &PE<'a>) -> Result<Vec<Symbol<'a>>> 
         let name: Cow<'a, str> = if is_file_record {
             // Aux records live at `(main_index + 1) * COFF_SYMBOL_SIZE`,
             // and goblin's helper takes the aux record's own index.
-            match symtab.aux_file(index + 1, sym.number_of_aux_symbols as usize) {
+            match symtab.aux_file(index.saturating_add(1), sym.number_of_aux_symbols as usize) {
                 Some(s) if !s.is_empty() => Cow::Borrowed(s),
                 _ => continue,
             }
@@ -175,7 +181,7 @@ fn collect_symbols<'a>(bytes: &'a [u8], pe: &PE<'a>) -> Result<Vec<Symbol<'a>>> 
             if end == 0 {
                 continue;
             }
-            Cow::Owned(String::from_utf8_lossy(&sym.name[..end]).into_owned())
+            Cow::Owned(String::from_utf8_lossy(sym.name.get(..end).unwrap_or(&[])).into_owned())
         };
         let kind = classify_symbol(sym.storage_class, sym.typ);
         let section_va = if sym.section_number > 0 {

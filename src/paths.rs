@@ -6,6 +6,7 @@
 //! compiled in. See RESEARCH.md §5.4 and WeLiveSecurity examples.
 
 use crate::container::{Container, SectionKind};
+use core::fmt;
 
 /// Attribution data extracted from a `.nimble/pkgs` path leak.
 #[derive(Debug, Clone)]
@@ -25,6 +26,11 @@ pub struct NimblePath {
 }
 
 /// OS hint from path format.
+///
+/// # Stability
+///
+/// The string returned by [`Display`](fmt::Display) is part of nimrod's
+/// stable API. Changes are SemVer-major.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PathOs {
     /// Path starts with a drive letter (`C:\` or `C:/`).
@@ -33,6 +39,16 @@ pub enum PathOs {
     Unix,
     /// Relative or unrecognised prefix.
     Unknown,
+}
+
+impl fmt::Display for PathOs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Windows => "Windows",
+            Self::Unix => "Unix",
+            Self::Unknown => "Unknown",
+        })
+    }
 }
 
 /// Scans read-only sections for `.nimble/pkgs` path leaks.
@@ -58,22 +74,26 @@ fn scan_section(
     // Scan for the ".nimble/pkgs" substring.
     let needle = b".nimble/pkgs";
     let mut start = 0;
-    while let Some(pos) = memchr::memmem::find(&data[start..], needle) {
-        let abs_pos = start + pos;
+    while let Some(tail) = data.get(start..)
+        && let Some(pos) = memchr::memmem::find(tail, needle)
+    {
+        let abs_pos = start.saturating_add(pos);
 
         // Walk backwards to find the start of the enclosing cstring.
         let str_start = walk_back_to_string_start(data, abs_pos);
         // Walk forwards to find the NUL terminator.
-        let str_end = data[abs_pos..]
-            .iter()
-            .position(|&b| b == 0)
-            .map(|p| abs_pos + p)
-            .unwrap_or(data.len().min(abs_pos + 4096));
+        let str_end = data
+            .get(abs_pos..)
+            .and_then(|s| s.iter().position(|&b| b == 0))
+            .map(|p| abs_pos.saturating_add(p))
+            .unwrap_or_else(|| data.len().min(abs_pos.saturating_add(4096)));
 
-        if let Ok(raw) = std::str::from_utf8(&data[str_start..str_end]) {
-            if !raw.is_empty() && seen.insert(raw.to_owned()) {
-                out.push(parse_nimble_path(raw));
-            }
+        if let Some(slice) = data.get(str_start..str_end)
+            && let Ok(raw) = std::str::from_utf8(slice)
+            && !raw.is_empty()
+            && seen.insert(raw.to_owned())
+        {
+            out.push(parse_nimble_path(raw));
         }
 
         start = str_end.saturating_add(1);
@@ -84,17 +104,20 @@ fn walk_back_to_string_start(data: &[u8], pos: usize) -> usize {
     // Walk backwards from `pos` looking for a NUL or non-printable byte.
     let mut i = pos;
     while i > 0 {
-        let b = data[i - 1];
+        let prev = i.saturating_sub(1);
+        let Some(&b) = data.get(prev) else {
+            return i;
+        };
         if b == 0 || !(0x20..=0x7E).contains(&b) {
             return i;
         }
-        i -= 1;
+        i = prev;
     }
     0
 }
 
 fn parse_nimble_path(raw: &str) -> NimblePath {
-    let os_hint = if raw.len() >= 3 && raw.as_bytes()[1] == b':' {
+    let os_hint = if raw.len() >= 3 && raw.as_bytes().get(1).copied() == Some(b':') {
         PathOs::Windows
     } else if raw.starts_with('/') {
         PathOs::Unix
@@ -134,7 +157,9 @@ fn extract_user_hint(raw: &str, os: PathOs) -> Option<String> {
         PathOs::Windows => {
             // `C:/Users/<user>/.nimble/` or `C:\Users\<user>\.nimble\`
             let norm = raw.replace('\\', "/");
-            let after = norm.find("/Users/").map(|i| &norm[i + 7..])?;
+            let after = norm
+                .find("/Users/")
+                .and_then(|i| norm.get(i.saturating_add(7)..))?;
             let user = after.split('/').next()?;
             if !user.is_empty() {
                 Some(user.to_owned())
@@ -151,10 +176,11 @@ fn extract_user_hint(raw: &str, os: PathOs) -> Option<String> {
 fn extract_package_info(raw: &str) -> (Option<String>, Option<String>, Option<String>) {
     // Find the segment after ".nimble/pkgs2/" or ".nimble/pkgs/"
     let pkg_segment = if let Some(pos) = raw.find(".nimble/pkgs2/") {
-        Some((&raw[pos + 14..], true)) // (segment, is_pkgs2)
+        raw.get(pos.saturating_add(14)..).map(|s| (s, true)) // (segment, is_pkgs2)
     } else {
         raw.find(".nimble/pkgs/")
-            .map(|pos| (&raw[pos + 13..], false))
+            .and_then(|pos| raw.get(pos.saturating_add(13)..))
+            .map(|s| (s, false))
     };
 
     let Some((segment, is_pkgs2)) = pkg_segment else {
@@ -176,7 +202,9 @@ fn extract_package_info(raw: &str) -> (Option<String>, Option<String>, Option<St
     let mut name_end = None;
     let bytes = dir_part.as_bytes();
     for i in 0..bytes.len().saturating_sub(1) {
-        if bytes[i] == b'-' && bytes[i + 1].is_ascii_digit() {
+        let here = bytes.get(i).copied();
+        let next = bytes.get(i.saturating_add(1)).copied();
+        if here == Some(b'-') && next.is_some_and(|b| b.is_ascii_digit()) {
             name_end = Some(i);
             break;
         }
@@ -186,14 +214,18 @@ fn extract_package_info(raw: &str) -> (Option<String>, Option<String>, Option<St
         return (Some(dir_part.to_owned()), None, None);
     };
 
-    let pkg_name = &dir_part[..ne];
-    let remainder = &dir_part[ne + 1..];
+    let Some(pkg_name) = dir_part.get(..ne) else {
+        return (Some(dir_part.to_owned()), None, None);
+    };
+    let Some(remainder) = dir_part.get(ne.saturating_add(1)..) else {
+        return (Some(pkg_name.to_owned()), None, None);
+    };
 
     if is_pkgs2 {
         // pkgs2: `<ver>-<hash>`
         if let Some(hash_sep) = remainder.rfind('-') {
-            let ver = &remainder[..hash_sep];
-            let hash = &remainder[hash_sep + 1..];
+            let ver = remainder.get(..hash_sep).unwrap_or("");
+            let hash = remainder.get(hash_sep.saturating_add(1)..).unwrap_or("");
             (
                 Some(pkg_name.to_owned()),
                 Some(ver.to_owned()),

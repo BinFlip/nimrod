@@ -44,11 +44,15 @@ pub struct ModuleInfo {
 }
 
 /// A function symbol within a module.
+///
+/// `address` is a virtual address (image load space). Convert to an RVA
+/// via [`crate::container::Container::va_to_rva`] /
+/// [`crate::NimBinary::image_base`].
 #[derive(Debug, Clone)]
 pub struct ModuleSymbol {
     /// Demangled Nim identifier.
     pub name: String,
-    /// Virtual address.
+    /// Virtual address (image load space, not file offset).
     pub address: u64,
     /// Size in bytes (from ELF `st_size`; zero if unavailable).
     pub size: u64,
@@ -58,6 +62,10 @@ pub struct ModuleSymbol {
 
 impl ModuleInfo {
     /// Number of function symbols in this module.
+    ///
+    /// `usize` is always representable in `u64` on every target nimrod
+    /// supports (32- and 64-bit), so callers persisting this count to a
+    /// 64-bit column may cast `as u64` without overflow.
     pub fn symbol_count(&self) -> usize {
         self.symbols.len()
     }
@@ -90,17 +98,17 @@ pub fn build(container: &Container<'_>) -> ModuleMap {
     // Source 2: demangled symbols → module names.
     // Only count symbols with a valid `_u<N>` item ID.
     for sym in container.symbols() {
-        if let Some(d) = symbol::parse(sym.name.as_ref()) {
-            if let Some(item_id) = d.item_id {
-                let key = d.module.to_owned();
-                let entry = modules.entry(key).or_insert_with(default_info);
-                entry.symbols.push(ModuleSymbol {
-                    name: d.identifier.into_owned(),
-                    address: sym.vm_addr,
-                    size: sym.size,
-                    item_id,
-                });
-            }
+        if let Some(d) = symbol::parse(sym.name.as_ref())
+            && let Some(item_id) = d.item_id
+        {
+            let key = d.module.to_owned();
+            let entry = modules.entry(key).or_insert_with(default_info);
+            entry.symbols.push(ModuleSymbol {
+                name: d.identifier.into_owned(),
+                address: sym.vm_addr,
+                size: sym.size,
+                item_id,
+            });
         }
     }
 
@@ -128,10 +136,10 @@ pub fn build(container: &Container<'_>) -> ModuleMap {
         };
 
         if let Some(key) = matched_key {
-            if let Some(info) = modules.get_mut(&key) {
-                if !info.file_paths.contains(&fp.path) {
-                    info.file_paths.push(fp.path.clone());
-                }
+            if let Some(info) = modules.get_mut(&key)
+                && !info.file_paths.contains(&fp.path)
+            {
+                info.file_paths.push(fp.path.clone());
             }
         } else {
             // No match — create a new entry keyed by stem.

@@ -7,6 +7,14 @@
 //! that hasn't run `build.sh` yet will still pass — only the specific
 //! fixture test becomes a no-op.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing
+)]
+
 use std::path::{Path, PathBuf};
 
 use nimrod::{
@@ -305,9 +313,9 @@ fn other_system_binaries_do_not_detect() {
 #[test]
 fn garbage_bytes_do_not_detect() {
     let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00];
-    match NimBinary::from_bytes(&garbage) {
-        Ok(bin) => assert!(!bin.is_nim(), "garbage bytes should not detect"),
-        Err(_) => {} // parse failure is also acceptable
+    // Parse failure is also acceptable.
+    if let Ok(bin) = NimBinary::from_bytes(&garbage) {
+        assert!(!bin.is_nim(), "garbage bytes should not detect");
     }
 }
 
@@ -686,4 +694,89 @@ fn nightly_elf_module_map_has_known_modules() {
         "expected 'system' to have >10 symbols, got {}",
         system.symbol_count()
     );
+}
+
+// ----- §11.2 RVA accessors --------------------------------------------------
+
+/// PE: image_base is non-zero and shim VAs convert to a sane RVA.
+#[test]
+fn nightly_pe_image_base_and_shim_rva() {
+    let Some((data, label)) = parse_fixture("nightly/windows_x64/nim-2.3.1/bin/nim.exe") else {
+        eprintln!("skip: nightly PE not present");
+        return;
+    };
+    let bin = NimBinary::from_bytes(&data).unwrap_or_else(|e| panic!("parse {label}: {e}"));
+
+    let base = bin.image_base();
+    assert!(base > 0, "PE image_base should be non-zero, got {base:#x}");
+
+    let shims = bin.entry_shims();
+    assert!(
+        !shims.is_empty(),
+        "expected at least one shim on nightly PE"
+    );
+    for s in shims {
+        let rva = bin.shim_rva(s).unwrap_or_else(|| {
+            panic!(
+                "shim {} VA {:#x} below image_base {:#x}",
+                s.symbol_name, s.address, base
+            )
+        });
+        assert!(rva < 0x1_0000_0000, "RVA suspiciously large: {rva:#x}");
+        assert_eq!(rva.checked_add(base), Some(s.address));
+    }
+}
+
+/// §11.5: scans are cached — repeat calls return the same slice
+/// (identical pointer + length).
+#[test]
+fn scan_accessors_are_cached() {
+    let Some((data, label)) = parse_fixture("nightly/linux_x64/nim-2.3.1/bin/nim") else {
+        eprintln!("skip: nightly ELF not present");
+        return;
+    };
+    let bin = NimBinary::from_bytes(&data).unwrap_or_else(|e| panic!("parse {label}: {e}"));
+
+    let a = bin.entry_shims();
+    let b = bin.entry_shims();
+    assert_eq!(a.as_ptr(), b.as_ptr(), "entry_shims not cached");
+
+    let a = bin.init_functions();
+    let b = bin.init_functions();
+    assert_eq!(a.as_ptr(), b.as_ptr(), "init_functions not cached");
+
+    let a = bin.rtti_symbols();
+    let b = bin.rtti_symbols();
+    assert_eq!(a.as_ptr(), b.as_ptr(), "rtti_symbols not cached");
+
+    let a = bin.raise_sites();
+    let b = bin.raise_sites();
+    assert_eq!(a.as_ptr(), b.as_ptr(), "raise_sites not cached");
+
+    let a = bin.string_literals_v2();
+    let b = bin.string_literals_v2();
+    assert_eq!(a.as_ptr(), b.as_ptr(), "string_literals_v2 not cached");
+
+    let a = bin.module_map() as *const _;
+    let b = bin.module_map() as *const _;
+    assert_eq!(a, b, "module_map not cached");
+}
+
+/// ELF: image_base is the lowest PT_LOAD vaddr and RVAs are computed from it.
+#[test]
+fn nightly_elf_image_base_and_init_rva() {
+    let Some((data, label)) = parse_fixture("nightly/linux_x64/nim-2.3.1/bin/nim") else {
+        eprintln!("skip: nightly ELF not present");
+        return;
+    };
+    let bin = NimBinary::from_bytes(&data).unwrap_or_else(|e| panic!("parse {label}: {e}"));
+
+    let base = bin.image_base();
+    let inits = bin.init_functions();
+    assert!(!inits.is_empty(), "expected init functions on nightly ELF");
+    for i in inits {
+        if let Some(rva) = bin.init_rva(i) {
+            assert_eq!(rva.checked_add(base), Some(i.address));
+        }
+    }
 }

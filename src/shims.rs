@@ -5,8 +5,14 @@
 //! scans the symbol table for them in a single pass.
 
 use crate::container::Container;
+use core::fmt;
 
 /// Which canonical entry-point shim a symbol represents.
+///
+/// # Stability
+///
+/// The string returned by [`Display`](fmt::Display) is part of nimrod's
+/// stable API. Changes are SemVer-major.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShimKind {
     /// `NimMain` — public initialiser, calls `NimMainInner`.
@@ -21,14 +27,29 @@ pub enum ShimKind {
     NimMainModule,
 }
 
+impl fmt::Display for ShimKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NimMain => "NimMain",
+            Self::NimMainInner => "NimMainInner",
+            Self::PreMain => "PreMain",
+            Self::PreMainInner => "PreMainInner",
+            Self::NimMainModule => "NimMainModule",
+        })
+    }
+}
+
 /// A located entry-point shim.
+///
+/// `address` is a virtual address (image load space). To convert to an
+/// RVA for disassembler use, call [`crate::NimBinary::shim_rva`].
 #[derive(Debug, Clone)]
-pub struct EntryShim<'a> {
+pub struct EntryShim {
     /// Which canonical shim this is.
     pub kind: ShimKind,
     /// The raw symbol name as it appeared in the binary.
-    pub symbol_name: &'a str,
-    /// Virtual address of the symbol.
+    pub symbol_name: String,
+    /// Virtual address of the symbol (image load space, not file offset).
     pub address: u64,
 }
 
@@ -48,7 +69,7 @@ const SHIM_NAMES: &[(&str, ShimKind)] = &[
 /// Returns all matched shims. With `--nimMainPrefix` the prefix is
 /// automatically detected: a symbol ending in `NimMain` whose prefix is
 /// shared by other shim names qualifies.
-pub fn scan<'a>(container: &'a Container<'a>) -> Vec<EntryShim<'a>> {
+pub fn scan(container: &Container<'_>) -> Vec<EntryShim> {
     let mut result = Vec::new();
 
     for sym in container.symbols() {
@@ -63,7 +84,7 @@ pub fn scan<'a>(container: &'a Container<'a>) -> Vec<EntryShim<'a>> {
             {
                 result.push(EntryShim {
                     kind,
-                    symbol_name: name,
+                    symbol_name: name.to_string(),
                     address: sym.vm_addr,
                 });
                 break;
@@ -78,10 +99,12 @@ pub fn scan<'a>(container: &'a Container<'a>) -> Vec<EntryShim<'a>> {
 /// non-empty and not contain `__` (which would indicate a normal Nim
 /// function, not a shim).
 fn is_prefix_match(symbol: &str, suffix: &str) -> bool {
-    if symbol.len() <= suffix.len() {
+    let Some(prefix) = symbol.strip_suffix(suffix) else {
+        return false;
+    };
+    if prefix.is_empty() {
         return false;
     }
-    let prefix = &symbol[..symbol.len() - suffix.len()];
     // A nimMainPrefix is a short identifier — no double underscores.
     !prefix.contains("__")
 }
@@ -91,10 +114,10 @@ fn is_prefix_match(symbol: &str, suffix: &str) -> bool {
 /// Returns `Some("")` if the default (empty) prefix is in use,
 /// `Some(prefix)` if a shared non-empty prefix is found across all shims,
 /// or `None` if no shims were located.
-pub fn detect_prefix<'a>(shims: &'a [EntryShim<'a>]) -> Option<&'a str> {
+pub fn detect_prefix(shims: &[EntryShim]) -> Option<&str> {
     // Find the NimMain shim — its prefix is authoritative.
     let nim_main = shims.iter().find(|s| s.kind == ShimKind::NimMain)?;
-    let name = nim_main.symbol_name;
+    let name = nim_main.symbol_name.as_str();
     let stripped = name.strip_prefix('_').unwrap_or(name);
     let prefix = stripped.strip_suffix("NimMain")?;
     Some(prefix)

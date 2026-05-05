@@ -15,11 +15,10 @@ use nimrod::{
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
+    let Some(path) = args.get(1) else {
         eprintln!("usage: dump <path-to-binary>");
         process::exit(2);
-    }
-    let path = &args[1];
+    };
 
     let data = fs::read(path).unwrap_or_else(|e| {
         eprintln!("error reading {path}: {e}");
@@ -84,14 +83,14 @@ fn main() {
     let shims = bin.entry_shims();
     println!();
     println!("entry_shims: {} found", shims.len());
-    for s in &shims {
+    for s in shims {
         println!("  {:?} at {:#x}  ({})", s.kind, s.address, s.symbol_name);
     }
 
     let inits = bin.init_functions();
     println!();
     println!("init_functions: {} found", inits.len());
-    for f in &inits {
+    for f in inits {
         println!(
             "  {:?} at {:#x}  {} => {}",
             f.kind, f.address, f.symbol_name, f.module_path.path
@@ -103,7 +102,7 @@ fn main() {
     let v1_count = rtti.iter().filter(|r| r.version == RttiVersion::V1).count();
     println!();
     println!("rtti_symbols: {} V2, {} V1", v2_count, v1_count);
-    for r in &rtti {
+    for r in rtti {
         let mut detail = format!("{:?} at {:#x}  {}", r.version, r.address, r.symbol_name);
         match r.version {
             RttiVersion::V2 => {
@@ -149,7 +148,7 @@ fn main() {
                 }
             }
         }
-        if let Some(frag) = r.type_fragment {
+        if let Some(frag) = r.type_fragment.as_deref() {
             detail.push_str(&format!("  type={frag}"));
         }
         println!("  {detail}");
@@ -192,7 +191,7 @@ fn main() {
     if !nimble.is_empty() {
         println!();
         println!("nimble_paths: {} found", nimble.len());
-        for p in &nimble {
+        for p in nimble {
             println!("  {:?} os={:?}", p.raw, p.os_hint);
             if let Some(ref user) = p.user_hint {
                 println!("    user: {user}");
@@ -214,7 +213,7 @@ fn main() {
     if !exceptions.is_empty() {
         println!();
         println!("exception_types: {} found", exceptions.len());
-        for e in &exceptions {
+        for e in exceptions {
             println!("  {}", e.type_name);
         }
     }
@@ -223,7 +222,7 @@ fn main() {
     if !raise_sites.is_empty() {
         println!();
         println!("raise_sites: {} found", raise_sites.len());
-        for rs in &raise_sites {
+        for rs in raise_sites {
             let etype = rs.exception_type.as_deref().unwrap_or("?");
             let proc_n = rs.proc_name.as_deref().unwrap_or("?");
             let file = rs.file.as_deref().unwrap_or("?");
@@ -283,7 +282,7 @@ fn main() {
     let v2_literals = bin.string_literals_v2();
     println!();
     println!("string_literals_v2: {} found", v2_literals.len());
-    for lit in &v2_literals {
+    for lit in v2_literals {
         let display = if lit.value.len() > 80 {
             format!("{:?}...", &lit.value[..77])
         } else {
@@ -296,7 +295,7 @@ fn main() {
     if !v1_literals.is_empty() {
         println!();
         println!("string_literals_v1: {} found", v1_literals.len());
-        for lit in &v1_literals {
+        for lit in v1_literals {
             let display = if lit.value.len() > 80 {
                 format!("{:?}...", &lit.value[..77])
             } else {

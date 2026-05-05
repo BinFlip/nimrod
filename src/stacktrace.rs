@@ -73,16 +73,16 @@ fn harvest_section(
         // Find next NUL-terminated string.
         let Some(cstr) = util::slice_cstring(data, offset, 4096) else {
             // No NUL found within budget — skip forward.
-            offset += 1;
+            offset = offset.saturating_add(1);
             continue;
         };
 
         if cstr.is_empty() {
-            offset += 1;
+            offset = offset.saturating_add(1);
             continue;
         }
 
-        let advance = cstr.len() + 1; // +1 for the NUL terminator
+        let advance = cstr.len().saturating_add(1); // +1 for the NUL terminator
 
         if let Ok(s) = std::str::from_utf8(cstr) {
             // File path: ends with ".nim"
@@ -93,8 +93,8 @@ fn harvest_section(
                 let path = s.strip_prefix('@').unwrap_or(s);
                 if path.ends_with(".nim") && !path.is_empty() && seen_files.insert(path.to_owned())
                 {
-                    let is_absolute =
-                        path.starts_with('/') || (path.len() >= 3 && path.as_bytes()[1] == b':');
+                    let is_absolute = path.starts_with('/')
+                        || (path.len() >= 3 && path.as_bytes().get(1).copied() == Some(b':'));
                     file_paths.push(FilePath {
                         path: path.to_owned(),
                         is_absolute,
@@ -112,7 +112,7 @@ fn harvest_section(
             }
         }
 
-        offset += advance;
+        offset = offset.saturating_add(advance);
     }
 }
 
@@ -127,7 +127,9 @@ fn is_printable(s: &str) -> bool {
 /// digits, and underscores. Some operators are mangled but the stack-trace
 /// `procname` field stores the original Nim name.
 fn is_nim_proc_name(s: &str) -> bool {
-    let first = s.as_bytes()[0];
+    let Some(&first) = s.as_bytes().first() else {
+        return false;
+    };
     if !first.is_ascii_alphabetic() {
         return false;
     }
