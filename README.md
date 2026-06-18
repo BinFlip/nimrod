@@ -15,9 +15,11 @@ attribution paths, and exception raise sites.
 | Artifact | Description |
 |----------|-------------|
 | **Detection** | 11 independent fingerprint probes — reliable even on stripped `-d:danger` builds |
-| **GC mode** | `refc` (legacy) vs `arc/orc` (modern) from RTTI symbol presence |
+| **GC mode / version** | `refc` vs `arc/orc`, plus a best-effort `Nim1xRefc` / `Nim2xArc` / `Nim2xOrc` hint |
 | **Entry shims** | `NimMain`, `PreMain`, `NimMainModule`, etc. with addresses |
 | **Init functions** | `*Init000` / `*DatInit000` with decoded build-host module paths |
+| **Type graph** | Cross-linked types: members, offsets, sizes, alignment, inheritance, enum values, resolved destructors |
+| **Code entrypoints** | One VA-tagged stream of shims, inits, procs, raise-enclosing fns, and RTTI procs for disassembler labelling |
 | **Module map** | Every Nim module compiled into the binary, with per-function name, address, and size (ELF) |
 | **Symbol demangling** | Reverses Nim's `<ident>__<module>_u<id>` mangling back to identifiers |
 | **RTTI** | `TNimTypeV2` fields (size, align, depth, destructor) and `TNimType` with field-name recovery |
@@ -41,6 +43,53 @@ if !bin.is_nim() {
 }
 
 println!("Format: {:?}, GC: {:?}", bin.format(), bin.gc_mode());
+```
+
+## Type graph
+
+`bin.types()` recovers every Nim type from RTTI (V1 `TNimType` and V2
+`TNimTypeV2`) into one cross-linked graph: size, alignment, inheritance
+depth, member fields with offsets and resolved field types, enum values, and
+destructor procs resolved to function symbols.
+
+```rust
+for t in bin.types() {
+    let name = t.name.as_deref().or(t.type_fragment.as_deref()).unwrap_or("?");
+    println!("{} {} (size={}, align={})", t.version, name, t.size, t.align);
+
+    if let Some(parent) = &t.parent {
+        println!("  inherits: {}", parent.name.as_deref().unwrap_or("?"));
+    }
+    for f in &t.fields {
+        let fty = f.type_ref.as_ref().and_then(|r| r.name.as_deref()).unwrap_or("?");
+        println!("  +{:<4} {}: {}", f.offset, f.name, fty);
+    }
+    for e in &t.enum_values {
+        println!("  = {} ({})", e.name, e.ordinal);
+    }
+    if let Some(d) = &t.destructor {
+        println!("  =destroy: {}", d.function.as_deref().unwrap_or("?"));
+    }
+}
+```
+
+V2 (ARC/ORC) object layouts also expose the inheritance chain via the
+`display` class-token array. On Mach-O, legacy V1 globals are stored in
+`__DATA,__common` with no file backing, so they degrade gracefully to
+name-only entries (`t.is_readable() == false`) carrying the type-name
+fragment — never a panic, never a dropped type.
+
+## Code entrypoints
+
+`bin.code_entrypoints()` collapses every confidently-labelled code address —
+entry shims, module inits, demangled procs, raise-enclosing functions, and
+RTTI destructor / trace procs — into one deduplicated, VA-sorted stream so a
+disassembler front-end can label a whole binary from a single call:
+
+```rust
+for ep in bin.code_entrypoints() {
+    println!("{:#x}  {}  {}", ep.va, ep.kind, ep.name);
+}
 ```
 
 ## Module map

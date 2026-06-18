@@ -4,6 +4,56 @@ All notable changes to `nimrod` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-06-17
+
+Type intelligence and API maturity. The headline is a cross-linked **type
+graph** that surfaces RTTI data (members, offsets, sizes, layout,
+inheritance, enum values, destructors) which 0.2.0 parsed internally but
+never exposed on the facade.
+
+### Added
+
+- **`types` module + `NimBinary::types()`** — the full Nim type graph
+  recovered from V1 (`TNimType`) and V2 (`TNimTypeV2`) RTTI. Each
+  `NimType` merges the RTTI symbol with parsed struct fields and resolves
+  raw pointers into cross-references: member field types and parent
+  (inheritance) types as `TypeRef`, and destructor / trace / finalizer /
+  marker / deepcopy procs as `CodeRef` (demangled function + module). New
+  public types: `NimType`, `TypeField`, `EnumValue`, `TypeRef`, `CodeRef`,
+  `TypeFlags`, `TypeShape`. Accessors `type_at(va)`, `object_types()`,
+  `enum_types()`, and `type_rva()`.
+  - V2 **inheritance chain** decoded from the `display` class-token array
+    (`depth + 1` tokens, RESEARCH.md §3.2), with V2 parents linked through it.
+  - V1 **enum values** (`name`, `ordinal`) recovered from the `TNimNode`
+    slots, distinct from struct fields.
+  - V2 → V1 **field bridge**: a non-nil `typeInfoV1` backpointer is followed
+    to import member names for ARC/ORC objects lacking `nimTypeNames`.
+  - Non-file-backed RTTI globals (Mach-O `__DATA,__common`, §3.6) degrade to
+    name-only entries (`is_readable() == false`) instead of being dropped.
+- **`entrypoints` module + `NimBinary::code_entrypoints()`** — one
+  deduplicated, VA-sorted stream of every labelled code address (entry shims,
+  module inits, demangled procs, raise-enclosing functions, RTTI destructor /
+  trace procs), tagged by `EntrypointKind`.
+- **`NimBinary::nim_version()`** → `NimVersionHint` (`Nim1xRefc` / `Nim2xArc`
+  / `Nim2xOrc` / `Unknown`), splitting ARC vs ORC by the presence of the ORC
+  cycle collector (`collectCycles`). Heuristic; see rustdoc for limits
+  (stripped ORC builds report as ARC).
+- **Ergonomics**: `Format::is_elf()/is_pe()/is_macho()`; `Arch::bits()` and
+  `Arch::is_64bit()`; `NimBinary::bitness()/is_64bit()`;
+  `DetectionMatches::bits()/from_bits()/from_bits_truncate()`; `as_str()` on
+  every public discriminator enum (`Format`, `Arch`, `GcMode`, `ShimKind`,
+  `PathOs`, `NimKind`, `RttiVersion`, plus the new `TypeShape`,
+  `EntrypointKind`, `NimVersionHint`).
+- Compile-time `Send + Sync` guarantee on `NimBinary`, plus a documented
+  **robustness contract** (never panics, empty on missing, skip-per-record)
+  and address-space contract in the crate docs.
+
+### Changed
+
+- `examples/dump.rs` now prints the full type graph (members, offsets, enum
+  values, inheritance, resolved destructors), the code-entrypoint kind
+  histogram, and the Nim version hint.
+
 ## [0.2.0] — 2026-05-04
 
 Public-API hardening, RVA helpers, and scan caching. **Breaking

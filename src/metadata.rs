@@ -30,14 +30,101 @@ pub enum GcMode {
     Unknown,
 }
 
-impl fmt::Display for GcMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl GcMode {
+    /// Returns the stable string identifier for this mode.
+    pub fn as_str(&self) -> &'static str {
+        match self {
             Self::Refc => "Refc",
             Self::ArcOrc => "ArcOrc",
             Self::Unknown => "Unknown",
-        })
+        }
     }
+}
+
+impl fmt::Display for GcMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Best-effort Nim compiler-family hint.
+///
+/// Derived from RTTI generation plus the cycle-collector signal — there is no
+/// deterministic version stamp in a Nim binary (`RESEARCH.md` §12), so this is
+/// a heuristic, not a precise point-release.
+///
+/// # Stability
+///
+/// The string returned by [`Display`](fmt::Display) is part of nimrod's stable
+/// API. Changes are SemVer-major.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NimVersionHint {
+    /// Legacy `--mm:refc` build (Nim 1.x default, still available in 2.x).
+    /// Signalled by V1 `NTI_` RTTI globals with no V2 globals.
+    Nim1xRefc,
+    /// Modern `--mm:arc` build (Nim 2.x). V2 RTTI present, no cycle collector.
+    Nim2xArc,
+    /// Modern `--mm:orc` build (Nim 2.x default). V2 RTTI present *and*
+    /// cycle-collector symbols (`collectCycles`) present.
+    Nim2xOrc,
+    /// Could not determine (no RTTI globals — e.g. a fully stripped binary).
+    Unknown,
+}
+
+impl NimVersionHint {
+    /// Returns the stable string identifier for this hint.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Nim1xRefc => "Nim1xRefc",
+            Self::Nim2xArc => "Nim2xArc",
+            Self::Nim2xOrc => "Nim2xOrc",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
+impl fmt::Display for NimVersionHint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Infers a best-effort Nim compiler-family hint.
+///
+/// - V2 RTTI + a cycle-collector symbol (`collectCycles…`) → [`NimVersionHint::Nim2xOrc`]
+/// - V2 RTTI without one → [`NimVersionHint::Nim2xArc`]
+/// - V1 RTTI only → [`NimVersionHint::Nim1xRefc`]
+/// - neither → [`NimVersionHint::Unknown`]
+///
+/// The ARC vs ORC split keys off the ORC cycle collector
+/// (`collectCycles` / `collectCyclesBacon`, from `lib/system/orc.nim`). That
+/// symbol is stripped by `-d:danger` / `--passL:-s`, so a stripped ORC build
+/// may be reported as [`NimVersionHint::Nim2xArc`]. The refc-vs-modern split is
+/// robust regardless of stripping (it keys off the RTTI naming convention,
+/// `RESEARCH.md` §3.4).
+pub fn detect_compiler_version(
+    container: &Container<'_>,
+    matches: DetectionMatches,
+) -> NimVersionHint {
+    match gc_mode(matches) {
+        GcMode::ArcOrc => {
+            if has_cycle_collector(container) {
+                NimVersionHint::Nim2xOrc
+            } else {
+                NimVersionHint::Nim2xArc
+            }
+        }
+        GcMode::Refc => NimVersionHint::Nim1xRefc,
+        GcMode::Unknown => NimVersionHint::Unknown,
+    }
+}
+
+/// Returns `true` if the symbol table contains an ORC cycle-collector routine.
+fn has_cycle_collector(container: &Container<'_>) -> bool {
+    container.symbols().iter().any(|s| {
+        let name = s.name.as_ref();
+        name.contains("collectCycles") || name.contains("collectCyclesBacon")
+    })
 }
 
 /// Infers the GC mode from the detection report's RTTI flags.
@@ -89,6 +176,41 @@ pub fn nim_main_prefix<'a>(container: &'a Container<'a>) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiler_version_splits_arc_orc_via_cycle_collector() {
+        use crate::container::{self, Arch, Format, Symbol, SymbolKind};
+        use std::borrow::Cow;
+
+        let bytes = [0u8; 4];
+        let orc_syms = vec![Symbol {
+            name: Cow::Borrowed("collectCyclesBacon__system_u3313"),
+            vm_addr: 0x1000,
+            size: 0,
+            kind: SymbolKind::Function,
+        }];
+        let orc = container::assemble(&bytes, Format::Elf, Arch::Amd64, 0, vec![], orc_syms);
+        assert_eq!(
+            detect_compiler_version(&orc, DetectionMatches::NTIV2_SYMBOL),
+            NimVersionHint::Nim2xOrc
+        );
+
+        // Same V2 flags but no cycle collector → ARC.
+        let arc = container::assemble(&bytes, Format::Elf, Arch::Amd64, 0, vec![], vec![]);
+        assert_eq!(
+            detect_compiler_version(&arc, DetectionMatches::NTIV2_SYMBOL),
+            NimVersionHint::Nim2xArc
+        );
+        // V1 only → refc; nothing → unknown.
+        assert_eq!(
+            detect_compiler_version(&arc, DetectionMatches::NTI_LEGACY_SYMBOL),
+            NimVersionHint::Nim1xRefc
+        );
+        assert_eq!(
+            detect_compiler_version(&arc, DetectionMatches::EMPTY),
+            NimVersionHint::Unknown
+        );
+    }
 
     #[test]
     fn gc_mode_from_flags() {

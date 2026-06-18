@@ -117,6 +117,52 @@ impl NimKind {
             n => Self::Other(n),
         }
     }
+
+    /// Returns the stable string identifier for this kind.
+    ///
+    /// [`NimKind::Other`] returns `"Other"`; the raw ordinal is available via
+    /// [`TNimTypeFields::kind_raw`].
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Bool => "Bool",
+            Self::Char => "Char",
+            Self::Enum => "Enum",
+            Self::Array => "Array",
+            Self::Object => "Object",
+            Self::Tuple => "Tuple",
+            Self::Set => "Set",
+            Self::Range => "Range",
+            Self::Ptr => "Ptr",
+            Self::Ref => "Ref",
+            Self::Sequence => "Sequence",
+            Self::Proc => "Proc",
+            Self::Pointer => "Pointer",
+            Self::String => "String",
+            Self::Cstring => "Cstring",
+            Self::Int => "Int",
+            Self::Int8 => "Int8",
+            Self::Int16 => "Int16",
+            Self::Int32 => "Int32",
+            Self::Int64 => "Int64",
+            Self::Float => "Float",
+            Self::Float32 => "Float32",
+            Self::Float64 => "Float64",
+            Self::Float128 => "Float128",
+            Self::UInt => "UInt",
+            Self::UInt8 => "UInt8",
+            Self::UInt16 => "UInt16",
+            Self::UInt32 => "UInt32",
+            Self::UInt64 => "UInt64",
+            Self::Other(_) => "Other",
+        }
+    }
+}
+
+impl core::fmt::Display for NimKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// `TNimTypeFlag` — from `lib/system/hti.nim`.

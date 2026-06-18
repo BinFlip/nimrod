@@ -27,15 +27,23 @@ pub enum ShimKind {
     NimMainModule,
 }
 
-impl fmt::Display for ShimKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl ShimKind {
+    /// Returns the stable string identifier for this shim kind (the canonical
+    /// unprefixed symbol name).
+    pub fn as_str(&self) -> &'static str {
+        match self {
             Self::NimMain => "NimMain",
             Self::NimMainInner => "NimMainInner",
             Self::PreMain => "PreMain",
             Self::PreMainInner => "PreMainInner",
             Self::NimMainModule => "NimMainModule",
-        })
+        }
+    }
+}
+
+impl fmt::Display for ShimKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

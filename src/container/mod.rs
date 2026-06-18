@@ -35,13 +35,35 @@ pub enum Format {
     MachO,
 }
 
-impl fmt::Display for Format {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl Format {
+    /// Returns the stable string identifier for this format.
+    pub fn as_str(&self) -> &'static str {
+        match self {
             Self::Elf => "Elf",
             Self::Pe => "Pe",
             Self::MachO => "MachO",
-        })
+        }
+    }
+
+    /// Returns `true` for [`Format::Elf`].
+    pub fn is_elf(&self) -> bool {
+        matches!(self, Self::Elf)
+    }
+
+    /// Returns `true` for [`Format::Pe`].
+    pub fn is_pe(&self) -> bool {
+        matches!(self, Self::Pe)
+    }
+
+    /// Returns `true` for [`Format::MachO`].
+    pub fn is_macho(&self) -> bool {
+        matches!(self, Self::MachO)
+    }
+}
+
+impl fmt::Display for Format {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -73,9 +95,10 @@ pub enum Arch {
     Other,
 }
 
-impl fmt::Display for Arch {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl Arch {
+    /// Returns the stable string identifier for this architecture.
+    pub fn as_str(&self) -> &'static str {
+        match self {
             Self::I386 => "I386",
             Self::Amd64 => "Amd64",
             Self::Arm => "Arm",
@@ -85,7 +108,28 @@ impl fmt::Display for Arch {
             Self::PowerPc => "PowerPc",
             Self::PowerPc64 => "PowerPc64",
             Self::Other => "Other",
-        })
+        }
+    }
+
+    /// Returns the pointer width in bits, or `None` for [`Arch::Other`]
+    /// (an architecture nimrod does not map explicitly).
+    pub fn bits(&self) -> Option<u8> {
+        match self {
+            Self::Amd64 | Self::Aarch64 | Self::Riscv64 | Self::PowerPc64 => Some(64),
+            Self::I386 | Self::Arm | Self::Riscv32 | Self::PowerPc => Some(32),
+            Self::Other => None,
+        }
+    }
+
+    /// Returns `true` for a known 64-bit architecture.
+    pub fn is_64bit(&self) -> bool {
+        self.bits() == Some(64)
+    }
+}
+
+impl fmt::Display for Arch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

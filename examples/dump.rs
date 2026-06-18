@@ -8,10 +8,7 @@
 
 use std::{env, fs, process};
 
-use nimrod::{
-    metadata::GcMode,
-    rtti::{symbols::RttiVersion, v1 as rtti_v1, v2 as rtti_v2},
-};
+use nimrod::{metadata::GcMode, rtti::symbols::RttiVersion};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -72,6 +69,10 @@ fn main() {
             GcMode::Unknown => "unknown",
         }
     );
+    println!("nim_ver   : {}", bin.nim_version());
+    if let Some(bits) = bin.bitness() {
+        println!("bitness   : {bits}-bit");
+    }
     if let Some(prefix) = bin.nim_main_prefix() {
         if prefix.is_empty() {
             println!("nim_prefix: (default)");
@@ -102,56 +103,91 @@ fn main() {
     let v1_count = rtti.iter().filter(|r| r.version == RttiVersion::V1).count();
     println!();
     println!("rtti_symbols: {} V2, {} V1", v2_count, v1_count);
-    for r in rtti {
-        let mut detail = format!("{:?} at {:#x}  {}", r.version, r.address, r.symbol_name);
-        match r.version {
-            RttiVersion::V2 => {
-                if let Some(fields) = rtti_v2::read(container, r.address) {
-                    detail.push_str(&format!(
-                        "  size={} align={} depth={} flags={}",
-                        fields.size, fields.align, fields.depth, fields.flags
-                    ));
-                    if let Some(ref name) = fields.name {
-                        detail.push_str(&format!("  name={name:?}"));
-                    }
-                    if fields.destructor_addr.is_some() {
-                        detail.push_str("  +destructor");
-                    }
-                    if fields.trace_impl_addr.is_some() {
-                        detail.push_str("  +traceImpl");
-                    }
-                }
-            }
-            RttiVersion::V1 => {
-                if let Some(fields) = rtti_v1::read(container, r.address) {
-                    detail.push_str(&format!(
-                        "  kind={:?} size={} align={}",
-                        fields.kind, fields.size, fields.align
-                    ));
-                    if !fields.flags.is_empty() {
-                        detail.push_str(&format!("  flags={:?}", fields.flags));
-                    }
-                    if let Some(ref name) = fields.name {
-                        detail.push_str(&format!("  name={name:?}"));
-                    }
-                    if !fields.node_fields.is_empty() {
-                        detail.push_str(&format!(
-                            "  fields=[{}]",
-                            fields
-                                .node_fields
-                                .iter()
-                                .map(|f| format!("{}@{}", f.name, f.offset))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
-                    }
-                }
+
+    // Full cross-linked type graph: members, offsets, layout, inheritance,
+    // enum values, and resolved destructor / finalizer functions.
+    let types = bin.types();
+    let unreadable = types.iter().filter(|t| !t.is_readable()).count();
+    println!();
+    println!(
+        "types: {} total ({} unreadable / name-only)",
+        types.len(),
+        unreadable
+    );
+    for t in types {
+        let name = t.name.as_deref().unwrap_or(t.symbol_name.as_str());
+        let mut line = format!(
+            "  [{}] {} @{:#x}  shape={} size={} align={}",
+            t.version, name, t.address, t.shape, t.size, t.align
+        );
+        if let Some(depth) = t.depth {
+            line.push_str(&format!(" depth={depth}"));
+        }
+        let mut fl = Vec::new();
+        if t.flags.acyclic {
+            fl.push("acyclic");
+        }
+        if t.flags.no_refs {
+            fl.push("norefs");
+        }
+        if t.flags.enum_hole {
+            fl.push("enumhole");
+        }
+        if !fl.is_empty() {
+            line.push_str(&format!(" flags={}", fl.join("|")));
+        }
+        if !t.is_readable() {
+            line.push_str("  (name-only)");
+        }
+        println!("{line}");
+
+        if let Some(p) = &t.parent {
+            let pname = p
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("{:#x}", p.address));
+            println!("      parent: {pname}");
+        }
+        if let Some(d) = &t.destructor {
+            println!(
+                "      destructor: {} @{:#x}",
+                d.function.as_deref().unwrap_or("?"),
+                d.address
+            );
+        }
+        if let Some(f) = &t.finalizer {
+            println!(
+                "      finalizer: {} @{:#x}",
+                f.function.as_deref().unwrap_or("?"),
+                f.address
+            );
+        }
+        if !t.display_tokens.is_empty() {
+            println!("      display: {:?}", t.display_tokens);
+        }
+        for f in &t.fields {
+            match f.type_ref.as_ref().and_then(|r| r.name.as_deref()) {
+                Some(fty) => println!("      +{:<4} {}: {}", f.offset, f.name, fty),
+                None => println!("      +{:<4} {}", f.offset, f.name),
             }
         }
-        if let Some(frag) = r.type_fragment.as_deref() {
-            detail.push_str(&format!("  type={frag}"));
+        for e in &t.enum_values {
+            println!("      = {} ({})", e.name, e.ordinal);
         }
-        println!("  {detail}");
+    }
+
+    let entrypoints = bin.code_entrypoints();
+    if !entrypoints.is_empty() {
+        println!();
+        println!("code_entrypoints: {} total", entrypoints.len());
+        let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for e in entrypoints {
+            let c = counts.entry(e.kind.as_str()).or_default();
+            *c = c.saturating_add(1);
+        }
+        for (kind, n) in &counts {
+            println!("  {kind}: {n}");
+        }
     }
 
     let harvest = bin.stack_trace();

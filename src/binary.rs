@@ -9,9 +9,10 @@ use std::sync::OnceLock;
 use crate::{
     container::{Arch, Container, Format},
     detect::{DetectionMatches, DetectionReport},
+    entrypoints::{self, CodeEntrypoint},
     error::Result,
     inits::{self, InitFunction},
-    metadata::{self, GcMode},
+    metadata::{self, GcMode, NimVersionHint},
     modules::{self, ModuleMap},
     paths::{self, NimblePath},
     raises::{self, ExceptionRef},
@@ -20,6 +21,7 @@ use crate::{
     sites::{self, RaiseSite},
     stacktrace::{self, StackTraceHarvest},
     strings::{v1 as strings_v1, v2 as strings_v2},
+    types::{self, NimType, TypeShape},
 };
 
 /// Lazy result cache. Each scan runs at most once per [`NimBinary`].
@@ -35,6 +37,8 @@ struct Cache {
     exception_types: OnceLock<Vec<ExceptionRef>>,
     raise_sites: OnceLock<Vec<RaiseSite>>,
     module_map: OnceLock<ModuleMap>,
+    types: OnceLock<Vec<NimType>>,
+    code_entrypoints: OnceLock<Vec<CodeEntrypoint>>,
 }
 
 /// Parsed view of a Nim-compiled native binary.
@@ -46,10 +50,10 @@ struct Cache {
 ///
 /// Every scan accessor (`entry_shims`, `init_functions`, `rtti_symbols`,
 /// `string_literals_v2`, `string_literals_v1`, `stack_trace`,
-/// `nimble_paths`, `exception_types`, `raise_sites`, `module_map`) runs
-/// at most once. The first call performs the full scan and stores the
-/// result; subsequent calls return the same borrowed slice in `O(1)`.
-/// Caching is thread-safe (`OnceLock`).
+/// `nimble_paths`, `exception_types`, `raise_sites`, `module_map`,
+/// `types`, `code_entrypoints`) runs at most once. The first call performs the full scan
+/// and stores the result; subsequent calls return the same borrowed
+/// slice in `O(1)`. Caching is thread-safe (`OnceLock`).
 ///
 /// # Address space
 ///
@@ -99,6 +103,17 @@ impl<'a> NimBinary<'a> {
         self.container.arch()
     }
 
+    /// Returns the pointer width in bits, or `None` for an architecture nimrod
+    /// does not map explicitly. See [`Arch::bits`].
+    pub fn bitness(&self) -> Option<u8> {
+        self.container.arch().bits()
+    }
+
+    /// Returns `true` for a known 64-bit target.
+    pub fn is_64bit(&self) -> bool {
+        self.container.arch().is_64bit()
+    }
+
     /// Returns the parsed container view. Mainly useful for downstream
     /// crates that want to walk sections or symbols directly.
     pub fn container(&self) -> &Container<'a> {
@@ -141,6 +156,14 @@ impl<'a> NimBinary<'a> {
     /// Infers the GC / memory-management mode from RTTI symbol presence.
     pub fn gc_mode(&self) -> GcMode {
         metadata::gc_mode(self.detection.matches)
+    }
+
+    /// Best-effort Nim compiler-family hint (refc / arc / orc).
+    ///
+    /// Heuristic; see [`metadata::detect_compiler_version`] for the signals and
+    /// their limitations (notably stripped ORC builds reported as ARC).
+    pub fn nim_version(&self) -> NimVersionHint {
+        metadata::detect_compiler_version(&self.container, self.detection.matches)
     }
 
     /// Detects the `--nimMainPrefix` value, if any.
@@ -232,6 +255,54 @@ impl<'a> NimBinary<'a> {
             .get_or_init(|| modules::build(&self.container))
     }
 
+    /// Recovers the full Nim type graph from RTTI (V1 + V2).
+    ///
+    /// Each entry merges the RTTI symbol with its parsed struct fields and
+    /// resolves the raw pointer fields into cross-references: member field
+    /// types, parent (inheritance) types, and destructor / trace / finalizer
+    /// functions. See [`crate::types`] for the extraction passes.
+    ///
+    /// Cached: subsequent calls return the same slice in `O(1)`.
+    pub fn types(&self) -> &[NimType] {
+        self.cache.types.get_or_init(|| types::build(&self.container))
+    }
+
+    /// Returns the type whose RTTI global is located at the virtual address
+    /// `va`, if any.
+    ///
+    /// Runs over the cached [`types`](NimBinary::types) slice; the type count
+    /// is small (a handful to low hundreds), so this is a linear scan.
+    pub fn type_at(&self, va: u64) -> Option<&NimType> {
+        self.types().iter().find(|t| t.address == va)
+    }
+
+    /// Iterates the object and tuple types in the type graph.
+    pub fn object_types(&self) -> impl Iterator<Item = &NimType> {
+        self.types()
+            .iter()
+            .filter(|t| matches!(t.shape, TypeShape::Object | TypeShape::Tuple))
+    }
+
+    /// Iterates the enum types in the type graph.
+    pub fn enum_types(&self) -> impl Iterator<Item = &NimType> {
+        self.types().iter().filter(|t| t.shape == TypeShape::Enum)
+    }
+
+    /// Returns every code address the crate can confidently label, as one
+    /// deduplicated, VA-sorted stream tagged by
+    /// [`EntrypointKind`](crate::entrypoints::EntrypointKind).
+    ///
+    /// Aggregates entry shims, init functions, demangled proc symbols,
+    /// raise-enclosing functions, and RTTI destructor / trace procs. See
+    /// [`crate::entrypoints`] for the dedup priority.
+    ///
+    /// Cached: subsequent calls return the same slice in `O(1)`.
+    pub fn code_entrypoints(&self) -> &[CodeEntrypoint] {
+        self.cache
+            .code_entrypoints
+            .get_or_init(|| entrypoints::build(&self.container))
+    }
+
     /// Returns the image base address. See [`Container::image_base`].
     pub fn image_base(&self) -> u64 {
         self.container.image_base()
@@ -259,7 +330,21 @@ impl<'a> NimBinary<'a> {
     pub fn rtti_rva(&self, sym: &RttiSymbol) -> Option<u64> {
         self.container.va_to_rva(sym.address)
     }
+
+    /// Returns a [`NimType`]'s RTTI-global address as an RVA.
+    pub fn type_rva(&self, ty: &NimType) -> Option<u64> {
+        self.container.va_to_rva(ty.address)
+    }
 }
+
+// Compile-time guarantee that `NimBinary` is `Send + Sync` so consumers may
+// share it across threads / hold it across `.await` points. All cached data is
+// owned (or borrows the immutable input slice), so this holds; the assertion
+// makes it a checked, documented contract rather than an accident.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<NimBinary<'static>>();
+};
 
 #[cfg(test)]
 mod tests {

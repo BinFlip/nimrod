@@ -20,12 +20,19 @@ pub enum RttiVersion {
     V2,
 }
 
-impl fmt::Display for RttiVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl RttiVersion {
+    /// Returns the stable string identifier for this RTTI version.
+    pub fn as_str(&self) -> &'static str {
+        match self {
             Self::V1 => "V1",
             Self::V2 => "V2",
-        })
+        }
+    }
+}
+
+impl fmt::Display for RttiVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

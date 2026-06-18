@@ -41,13 +41,20 @@ pub enum PathOs {
     Unknown,
 }
 
-impl fmt::Display for PathOs {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl PathOs {
+    /// Returns the stable string identifier for this OS hint.
+    pub fn as_str(&self) -> &'static str {
+        match self {
             Self::Windows => "Windows",
             Self::Unix => "Unix",
             Self::Unknown => "Unknown",
-        })
+        }
+    }
+}
+
+impl fmt::Display for PathOs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

@@ -80,6 +80,37 @@ impl DetectionMatches {
     /// fingerprints are stripped. See RESEARCH.md §11.3.
     pub const NIM_SIGNAL_STRINGS: Self = Self(1 << 10);
 
+    /// Mask of every defined flag bit (bits 0..=10).
+    const ALL_BITS: u16 = (1 << 11) - 1;
+
+    /// Returns the raw bitset.
+    ///
+    /// The bit positions are stable API: each flag's documented `1 << N`
+    /// value is part of nimrod's SemVer contract, so consumers may persist
+    /// `bits()` directly. Round-trips through [`from_bits`](Self::from_bits).
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
+    /// Reconstructs a flag set from a raw bitset, rejecting unknown bits.
+    ///
+    /// Returns `None` if `bits` has any bit set that does not correspond to a
+    /// defined flag, so a forward-compatible consumer can detect a bitset
+    /// written by a newer nimrod. Use [`from_bits_truncate`](Self::from_bits_truncate)
+    /// to silently drop unknown bits instead.
+    pub const fn from_bits(bits: u16) -> Option<Self> {
+        if bits & !Self::ALL_BITS == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
+    /// Reconstructs a flag set from a raw bitset, discarding unknown bits.
+    pub const fn from_bits_truncate(bits: u16) -> Self {
+        Self(bits & Self::ALL_BITS)
+    }
+
     /// Returns `true` if every flag in `other` is set in `self`.
     pub fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
@@ -340,6 +371,16 @@ mod tests {
         assert!(m.contains(DetectionMatches::FATAL_NIM));
         assert!(!m.contains(DetectionMatches::SYS_FATAL));
         assert_eq!(m.count(), 2);
+    }
+
+    #[test]
+    fn matches_bits_roundtrip() {
+        let m = DetectionMatches::NIMMAIN_SYMBOL | DetectionMatches::NIM_SIGNAL_STRINGS;
+        assert_eq!(DetectionMatches::from_bits(m.bits()), Some(m));
+        // Unknown bit (bit 11) is rejected by from_bits, dropped by truncate.
+        assert_eq!(DetectionMatches::from_bits(1 << 11), None);
+        assert!(DetectionMatches::from_bits_truncate(1 << 11).is_empty());
+        assert_eq!(DetectionMatches::EMPTY.bits(), 0);
     }
 
     #[test]
