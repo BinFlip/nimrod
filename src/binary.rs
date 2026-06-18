@@ -264,7 +264,9 @@ impl<'a> NimBinary<'a> {
     ///
     /// Cached: subsequent calls return the same slice in `O(1)`.
     pub fn types(&self) -> &[NimType] {
-        self.cache.types.get_or_init(|| types::build(&self.container))
+        self.cache
+            .types
+            .get_or_init(|| types::build(&self.container))
     }
 
     /// Returns the type whose RTTI global is located at the virtual address

@@ -37,7 +37,11 @@ fn elf_v2_type_graph_is_fully_readable() {
     let bin = NimBinary::from_bytes(&data).unwrap();
 
     let types = bin.types();
-    assert!(types.len() >= 80, "expected many V2 types, got {}", types.len());
+    assert!(
+        types.len() >= 80,
+        "expected many V2 types, got {}",
+        types.len()
+    );
 
     // One NimType per RTTI symbol (1:1 with the symbol scan).
     assert_eq!(types.len(), bin.rtti_symbols().len());
@@ -45,8 +49,16 @@ fn elf_v2_type_graph_is_fully_readable() {
     // Every type is a readable V2 record with a parsed size/align.
     for t in types {
         assert_eq!(t.version, RttiVersion::V2);
-        assert!(t.is_readable(), "V2 type {} should be file-backed", t.symbol_name);
-        assert!(t.align > 0, "align should be populated for {}", t.symbol_name);
+        assert!(
+            t.is_readable(),
+            "V2 type {} should be file-backed",
+            t.symbol_name
+        );
+        assert!(
+            t.align > 0,
+            "align should be populated for {}",
+            t.symbol_name
+        );
         assert!(t.depth.is_some(), "V2 depth should be populated");
     }
 
@@ -83,7 +95,10 @@ fn elf_v2_display_tokens_track_depth() {
         );
         checked += 1;
     }
-    assert!(checked > 0, "expected at least one type with display tokens");
+    assert!(
+        checked > 0,
+        "expected at least one type with display tokens"
+    );
 }
 
 #[test]
@@ -141,7 +156,10 @@ fn code_entrypoints_aggregate_sources() {
     assert!(!eps.is_empty());
 
     // VA-sorted and unique.
-    assert!(eps.windows(2).all(|w| w[0].va < w[1].va), "must be VA-sorted & deduped");
+    assert!(
+        eps.windows(2).all(|w| w[0].va < w[1].va),
+        "must be VA-sorted & deduped"
+    );
 
     let has = |k: EntrypointKind| eps.iter().any(|e| e.kind == k);
     assert!(has(EntrypointKind::EntryShim), "expected entry shims");

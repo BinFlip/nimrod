@@ -163,7 +163,13 @@ pub fn build(container: &Container<'_>) -> Vec<CodeEntrypoint> {
     for t in types::build(container) {
         if let Some(d) = &t.destructor {
             let name = code_ref_name(d);
-            insert(&mut map, d.address, EntrypointKind::RttiDestructor, name, container);
+            insert(
+                &mut map,
+                d.address,
+                EntrypointKind::RttiDestructor,
+                name,
+                container,
+            );
         }
         if let Some(tr) = &t.trace_impl {
             let name = code_ref_name(tr);
@@ -281,7 +287,10 @@ mod tests {
         assert_eq!(proc.name, "parseInt");
         assert_eq!(proc.size, Some(16));
 
-        assert!(eps.iter().all(|e| e.va != 0x3000), "non-Nim symbol excluded");
+        assert!(
+            eps.iter().all(|e| e.va != 0x3000),
+            "non-Nim symbol excluded"
+        );
         // VA-sorted output.
         assert!(eps.windows(2).all(|w| w[0].va <= w[1].va));
     }

@@ -470,7 +470,9 @@ fn resolve_code_ref(container: &Container<'_>, addr: u64) -> CodeRef {
     let demangled = symbol::parse(raw);
     CodeRef {
         address: addr,
-        function: demangled.as_ref().map(|d| d.identifier.clone().into_owned()),
+        function: demangled
+            .as_ref()
+            .map(|d| d.identifier.clone().into_owned()),
         module: demangled.as_ref().map(|d| d.module.to_owned()),
         symbol_name: Some(raw.to_owned()),
     }
