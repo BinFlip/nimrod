@@ -4,6 +4,17 @@ All notable changes to `nimrod` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-08-09
+
+### Changed
+
+- Added the missing `LICENSE` file. `Cargo.toml` has declared `license = "Apache-2.0"`
+  since the first release, but no license text was ever shipped with the crate.
+- Recorded ATRAPS LLC as copyright holder and added a `NOTICE` file. No functional change.
+- Dropped the deprecated `authors` field and repointed `repository` at the organisation.
+- Refreshed transitive dependencies (`cargo update`); no direct dependency changed version.
+- Publishing now uses crates.io trusted publishing instead of a stored registry token.
+
 ## [0.3.0] — 2026-06-17
 
 Type intelligence and API maturity. The headline is a cross-linked **type
